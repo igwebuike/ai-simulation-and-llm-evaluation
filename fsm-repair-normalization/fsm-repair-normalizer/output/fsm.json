@@ -1,0 +1,8 @@
+{
+  "states": ["A", "B"],
+  "initial_state": "A",
+  "final_states": ["B"],
+  "transitions": [
+    {"from": "A", "event": "x", "to": "B"}
+  ]
+}

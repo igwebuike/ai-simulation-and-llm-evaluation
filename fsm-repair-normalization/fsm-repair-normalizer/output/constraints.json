@@ -1,0 +1,5 @@
+{
+  "forbid_cycles": false,
+  "max_states": 10,
+  "state_name_pattern": "^[A-Z]$"
+}
