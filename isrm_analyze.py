@@ -26,7 +26,7 @@ def auto_find_dataset(explicit_path: Optional[str]) -> Path:
     if explicit_path:
         path = Path(explicit_path)
         if not path.exists():
-            raise FileNotFoundError("Dataset not found: {0}".format(path))
+            raise FileNotFoundError(f"Dataset not found: {path}")
         return path
 
     here = Path(__file__).resolve().parent
@@ -70,7 +70,7 @@ def load_dataset(path: Path) -> Tuple[pd.DataFrame, str, List[str]]:
         df = pd.read_excel(path, sheet_name=sheet_name)
         return df, sheet_name, xls.sheet_names
 
-    raise ValueError("Unsupported file type: {0}".format(path.suffix))
+    raise ValueError(f"Unsupported file type: {path.suffix}")
 
 
 def normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
@@ -152,6 +152,10 @@ def classify_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
     }
 
 
+def safe_numeric_series(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(series, errors="coerce").dropna()
+
+
 def build_column_profile(df: pd.DataFrame) -> pd.DataFrame:
     records = []
 
@@ -162,47 +166,34 @@ def build_column_profile(df: pd.DataFrame) -> pd.DataFrame:
         missing_pct = round((missing / max(len(df), 1)) * 100, 2)
         nunique = series.nunique(dropna=True)
 
-        dtype_name = str(series.dtype)
         sample_values = series.dropna().astype(str).head(5).tolist()
 
         row = {
             "column": col,
-            "dtype": dtype_name,
+            "dtype": str(series.dtype),
             "non_null_count": int(non_null),
             "missing_count": int(missing),
             "missing_pct": missing_pct,
             "unique_count": int(nunique),
             "sample_values": " | ".join(sample_values),
+            "min": "",
+            "max": "",
+            "mean": "",
+            "median": "",
         }
 
         if pd.api.types.is_numeric_dtype(series):
-            numeric = pd.to_numeric(series, errors="coerce")
-            row.update(
-                {
-                    "min": numeric.min(),
-                    "max": numeric.max(),
-                    "mean": numeric.mean(),
-                    "median": numeric.median(),
-                }
-            )
+            numeric = safe_numeric_series(series)
+            if not numeric.empty:
+                row["min"] = numeric.min()
+                row["max"] = numeric.max()
+                row["mean"] = numeric.mean()
+                row["median"] = numeric.median()
         elif pd.api.types.is_datetime64_any_dtype(series):
-            row.update(
-                {
-                    "min": series.min(),
-                    "max": series.max(),
-                    "mean": "",
-                    "median": "",
-                }
-            )
-        else:
-            row.update(
-                {
-                    "min": "",
-                    "max": "",
-                    "mean": "",
-                    "median": "",
-                }
-            )
+            non_null_dates = series.dropna()
+            if not non_null_dates.empty:
+                row["min"] = non_null_dates.min()
+                row["max"] = non_null_dates.max()
 
         records.append(row)
 
@@ -223,8 +214,7 @@ def build_missingness_profile(df: pd.DataFrame) -> pd.DataFrame:
             }
         )
 
-    out = pd.DataFrame(rows).sort_values(["missing_pct", "missing_count"], ascending=False)
-    return out
+    return pd.DataFrame(rows).sort_values(["missing_pct", "missing_count"], ascending=False)
 
 
 def build_categorical_profile(df: pd.DataFrame, cat_cols: List[str], top_n: int = 15) -> pd.DataFrame:
@@ -233,13 +223,7 @@ def build_categorical_profile(df: pd.DataFrame, cat_cols: List[str], top_n: int 
     for col in cat_cols:
         value_counts = df[col].fillna("<<MISSING>>").astype(str).value_counts().head(top_n)
         for value, count in value_counts.items():
-            records.append(
-                {
-                    "column": col,
-                    "value": value,
-                    "count": int(count),
-                }
-            )
+            records.append({"column": col, "value": value, "count": int(count)})
 
     return pd.DataFrame(records)
 
@@ -250,13 +234,7 @@ def build_flag_profile(df: pd.DataFrame, flag_cols: List[str]) -> pd.DataFrame:
     for col in flag_cols:
         counts = df[col].fillna("<<MISSING>>").astype(str).str.strip().str.lower().value_counts()
         for value, count in counts.items():
-            records.append(
-                {
-                    "column": col,
-                    "value": value,
-                    "count": int(count),
-                }
-            )
+            records.append({"column": col, "value": value, "count": int(count)})
 
     return pd.DataFrame(records)
 
@@ -265,7 +243,24 @@ def build_numeric_profile(df: pd.DataFrame, numeric_cols: List[str]) -> pd.DataF
     records = []
 
     for col in numeric_cols:
-        numeric = pd.to_numeric(df[col], errors="coerce")
+        numeric = safe_numeric_series(df[col])
+
+        if numeric.empty:
+            records.append(
+                {
+                    "column": col,
+                    "non_null_count": 0,
+                    "min": "",
+                    "p25": "",
+                    "median": "",
+                    "p75": "",
+                    "max": "",
+                    "mean": "",
+                    "std_dev": "",
+                }
+            )
+            continue
+
         records.append(
             {
                 "column": col,
@@ -287,7 +282,23 @@ def build_datetime_profile(df: pd.DataFrame, dt_cols: List[str]) -> pd.DataFrame
     records = []
 
     for col in dt_cols:
-        s = pd.to_datetime(df[col], errors="coerce")
+        s = pd.to_datetime(df[col], errors="coerce").dropna()
+
+        if s.empty:
+            records.append(
+                {
+                    "column": col,
+                    "non_null_count": 0,
+                    "min_date": "",
+                    "max_date": "",
+                    "year_min": "",
+                    "year_max": "",
+                    "distinct_years": 0,
+                    "distinct_months": 0,
+                }
+            )
+            continue
+
         years = s.dt.year.dropna()
         months = s.dt.to_period("M").astype(str).replace("NaT", np.nan).dropna()
 
@@ -318,38 +329,39 @@ def save_text_summary(
 ) -> None:
     duplicate_rows = int(df.duplicated().sum())
 
-    lines = []
-    lines.append("ISRM DATA PROFILE SUMMARY")
-    lines.append("=" * 80)
-    lines.append("Dataset: {0}".format(dataset_path))
-    lines.append("Sheet used: {0}".format(sheet_used))
-    lines.append("Available sheets: {0}".format(", ".join(all_sheets)))
-    lines.append("")
-    lines.append("Rows: {0}".format(len(df)))
-    lines.append("Columns: {0}".format(len(df.columns)))
-    lines.append("Duplicate rows: {0}".format(duplicate_rows))
-    lines.append("")
-    lines.append("Parsed date columns:")
-    lines.append(", ".join(parsed_dates) if parsed_dates else "None")
-    lines.append("")
-    lines.append("Numeric columns ({0}):".format(len(classified["numeric"])))
-    lines.append(", ".join(classified["numeric"]) if classified["numeric"] else "None")
-    lines.append("")
-    lines.append("Datetime columns ({0}):".format(len(classified["datetime"])))
-    lines.append(", ".join(classified["datetime"]) if classified["datetime"] else "None")
-    lines.append("")
-    lines.append("Flag-like columns ({0}):".format(len(classified["flag_like"])))
-    lines.append(", ".join(classified["flag_like"]) if classified["flag_like"] else "None")
-    lines.append("")
-    lines.append("Categorical columns ({0}):".format(len(classified["categorical"])))
-    lines.append(", ".join(classified["categorical"]) if classified["categorical"] else "None")
-    lines.append("")
-    lines.append("Text-heavy columns ({0}):".format(len(classified["text_heavy"])))
-    lines.append(", ".join(classified["text_heavy"]) if classified["text_heavy"] else "None")
-    lines.append("")
-    lines.append("First 20 columns:")
-    lines.append(", ".join(df.columns[:20].tolist()))
-    lines.append("")
+    lines = [
+        "ISRM DATA PROFILE SUMMARY",
+        "=" * 80,
+        f"Dataset: {dataset_path}",
+        f"Sheet used: {sheet_used}",
+        f"Available sheets: {', '.join(all_sheets)}",
+        "",
+        f"Rows: {len(df)}",
+        f"Columns: {len(df.columns)}",
+        f"Duplicate rows: {duplicate_rows}",
+        "",
+        "Parsed date columns:",
+        ", ".join(parsed_dates) if parsed_dates else "None",
+        "",
+        f"Numeric columns ({len(classified['numeric'])}):",
+        ", ".join(classified["numeric"]) if classified["numeric"] else "None",
+        "",
+        f"Datetime columns ({len(classified['datetime'])}):",
+        ", ".join(classified["datetime"]) if classified["datetime"] else "None",
+        "",
+        f"Flag-like columns ({len(classified['flag_like'])}):",
+        ", ".join(classified["flag_like"]) if classified["flag_like"] else "None",
+        "",
+        f"Categorical columns ({len(classified['categorical'])}):",
+        ", ".join(classified["categorical"]) if classified["categorical"] else "None",
+        "",
+        f"Text-heavy columns ({len(classified['text_heavy'])}):",
+        ", ".join(classified["text_heavy"]) if classified["text_heavy"] else "None",
+        "",
+        "First 20 columns:",
+        ", ".join(df.columns[:20].tolist()),
+        "",
+    ]
 
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -384,13 +396,13 @@ def chart_top_categoricals(df: pd.DataFrame, cat_cols: List[str], outdir: Path) 
         fig, ax = plt.subplots(figsize=(10, 6))
         ax.barh(counts.index.astype(str), counts.values)
         ax.invert_yaxis()
-        ax.set_title("Top Values: {0}".format(col))
+        ax.set_title(f"Top Values: {col}")
         ax.set_xlabel("Count")
         ax.set_ylabel(col)
         plt.tight_layout()
 
         safe_name = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in col)[:60]
-        fig.savefig(outdir / ("cat_{0}.png".format(safe_name)), dpi=220, bbox_inches="tight")
+        fig.savefig(outdir / f"cat_{safe_name}.png", dpi=220, bbox_inches="tight")
         plt.close(fig)
 
         plotted += 1
@@ -400,46 +412,38 @@ def chart_top_categoricals(df: pd.DataFrame, cat_cols: List[str], outdir: Path) 
 
 def chart_top_flags(df: pd.DataFrame, flag_cols: List[str], outdir: Path) -> None:
     for col in flag_cols[:8]:
-        counts = (
-            df[col]
-            .fillna("<<MISSING>>")
-            .astype(str)
-            .str.strip()
-            .str.lower()
-            .value_counts()
-        )
-
+        counts = df[col].fillna("<<MISSING>>").astype(str).str.strip().str.lower().value_counts()
         if counts.empty:
             continue
 
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.bar(counts.index.astype(str), counts.values)
-        ax.set_title("Flag Distribution: {0}".format(col))
+        ax.set_title(f"Flag Distribution: {col}")
         ax.set_xlabel(col)
         ax.set_ylabel("Count")
         plt.tight_layout()
 
         safe_name = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in col)[:60]
-        fig.savefig(outdir / ("flag_{0}.png".format(safe_name)), dpi=220, bbox_inches="tight")
+        fig.savefig(outdir / f"flag_{safe_name}.png", dpi=220, bbox_inches="tight")
         plt.close(fig)
 
 
 def chart_numeric_histograms(df: pd.DataFrame, numeric_cols: List[str], outdir: Path) -> None:
     plotted = 0
     for col in numeric_cols:
-        s = pd.to_numeric(df[col], errors="coerce").dropna()
+        s = safe_numeric_series(df[col])
         if len(s) < 5:
             continue
 
         fig, ax = plt.subplots(figsize=(8, 5))
         ax.hist(s, bins=20)
-        ax.set_title("Distribution: {0}".format(col))
+        ax.set_title(f"Distribution: {col}")
         ax.set_xlabel(col)
         ax.set_ylabel("Frequency")
         plt.tight_layout()
 
         safe_name = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in col)[:60]
-        fig.savefig(outdir / ("num_{0}.png".format(safe_name)), dpi=220, bbox_inches="tight")
+        fig.savefig(outdir / f"num_{safe_name}.png", dpi=220, bbox_inches="tight")
         plt.close(fig)
 
         plotted += 1
@@ -463,14 +467,14 @@ def chart_datetime_timelines(df: pd.DataFrame, dt_cols: List[str], outdir: Path)
 
         fig, ax = plt.subplots(figsize=(11, 5))
         ax.plot(labels, values, marker="o")
-        ax.set_title("Monthly Volume: {0}".format(col))
+        ax.set_title(f"Monthly Volume: {col}")
         ax.set_xlabel("Month")
         ax.set_ylabel("Count")
         ax.tick_params(axis="x", rotation=45)
         plt.tight_layout()
 
         safe_name = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in col)[:60]
-        fig.savefig(outdir / ("dt_{0}.png".format(safe_name)), dpi=220, bbox_inches="tight")
+        fig.savefig(outdir / f"dt_{safe_name}.png", dpi=220, bbox_inches="tight")
         plt.close(fig)
 
         plotted += 1
@@ -580,16 +584,16 @@ def main() -> None:
     chart_datetime_timelines(df, classified["datetime"], charts_dir)
 
     print("Profiling complete.")
-    print("Dataset: {0}".format(dataset_path))
-    print("Sheet used: {0}".format(sheet_used))
-    print("Rows: {0}".format(len(df)))
-    print("Columns: {0}".format(len(df.columns)))
-    print("Duplicate rows: {0}".format(duplicate_rows))
+    print(f"Dataset: {dataset_path}")
+    print(f"Sheet used: {sheet_used}")
+    print(f"Rows: {len(df)}")
+    print(f"Columns: {len(df.columns)}")
+    print(f"Duplicate rows: {duplicate_rows}")
     print("")
-    print("Outputs saved to: {0}".format(output_dir.resolve()))
-    print("Workbook: {0}".format((output_dir / 'isrm_profile_report.xlsx').resolve()))
-    print("Summary: {0}".format((output_dir / 'isrm_profile_summary.txt').resolve()))
-    print("Charts: {0}".format(charts_dir.resolve()))
+    print(f"Outputs saved to: {output_dir.resolve()}")
+    print(f"Workbook: {(output_dir / 'isrm_profile_report.xlsx').resolve()}")
+    print(f"Summary: {(output_dir / 'isrm_profile_summary.txt').resolve()}")
+    print(f"Charts: {charts_dir.resolve()}")
 
 
 if __name__ == "__main__":
