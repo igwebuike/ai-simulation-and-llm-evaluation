@@ -1,0 +1,30 @@
+ISRM DATA PROFILE SUMMARY
+================================================================================
+Dataset: ISRM Report (Primary Data Source).xlsx
+Sheet used: RAW
+Available sheets: RAW, Key Insights and Actions, Trends and Remediation
+
+Rows: 2310
+Columns: 153
+Duplicate rows: 0
+
+Parsed date columns:
+Audit_Year, Release_Date, Create_Date, Issue_Creation_Date, Expected_Due_Date, Days_Until_Due, Revised_Due_Date, Due_Date_Sld, Initial_Agreed_Remediation_Date, Issue_Closed_Date, Revised_Remediation_Date, Flag_3_Open_and_Overdue, Flag_7_Released_But_Not_Reviewed_Accepted, Flag_8_Older_Than_35_Days_But_Not_Released
+
+Numeric columns (46):
+IssueId, Total_Assets_USD, Ibt_USD, Net_Income_USD, Sales_USD, Days_Old, Global_Dtp_Aligned_ID, High_Risk_Control_ID, In_Scope_For_SOX_Testing_ID, RecommendationId, Controlid, Control_Owning_Entity, Alert_1_Rating_Verbal, Alert_2_GS_MRC_But_Not_GS_AF, Alert_3_Supply_Chain_AF, Alert_4_Itss_Accountable_Function_Flag, Alert_5_Pwc, Alert_6_Potential_Missing_Misstatement_Impact, Alert_7_Amt_Impact_Flag_0, Alert_8_Amt_Impact_Flag_Null, Alert_9_Amt_Impact_But_Rating_Is_Minor, Flag_4_Blank_Or_Other_Common_Insight, Flag_5_Blank_Root_Cause, Flag_6_ReviewedAccepted_But_Not_Released, Flag_10_New_Title_Flag, Flag_11_Issue_Finding_Source, Flag_13_Recommendation_Details, Flag_14_Recommendation_Title, Flag_15_Documentation_And_Sox_Reportable, Flag_16_N_A_And_SOX_Reportable, RiskId, ObjectiveId, Objective_Title, Overdue_Flag, Flag_9_Blank_Management_Response, Flag_12_Sox_Reportable_Classification, Flag_17_Blank_Mitigating_Control, Flag_18_Mtigating_Control_Doesnt_Contain_Control_Ref_Id, Alert_10_Mitigating_Control_Contains_NA, Flag_1_Blank_Summary_Finding_Exec_Summary, Flag_2_Long_Summary_Finding_Exec_Summary, Remediation Status, Justification, Maps to Gary?, Final_Month_Snapshot, Repeat_Year
+
+Datetime columns (14):
+Audit_Year, Release_Date, Create_Date, Issue_Creation_Date, Expected_Due_Date, Days_Until_Due, Revised_Due_Date, Due_Date_Sld, Initial_Agreed_Remediation_Date, Issue_Closed_Date, Revised_Remediation_Date, Flag_3_Open_and_Overdue, Flag_7_Released_But_Not_Reviewed_Accepted, Flag_8_Older_Than_35_Days_But_Not_Released
+
+Flag-like columns (12):
+IsReleased, Global_DTP_Aligned, High_Risk_Control, Key, Oso_Not_Audited_In_5_Years_Flag, Pooling, Released, Oso_Supply_Chain_Flag, Critical_Flag, Open_Critical_issues_Sld_Flag, Open_Issues_Sld_Flag, Open_Major_Issues_Sld
+
+Categorical columns (73):
+ISRM Reportable, Root Cause defined, TS vs BIS/BT, Critical Issue by CTRL Design, SOX_Reportable, RBR_Vs_SOX_Vs_Pwc, Issue_Status_SOX_Cert, Issue_Status_SOX_Short, Finance_Or_IT, Accountable_Function, Oso_Finance_Audit_Manager, Oso_SOX_Testing_Ownership, MRC_Subgroup_For_GAA_Tested_Entities, MRC_4_Digit, Entity, Assessment_Title, Oso_IT_Audit_Manger, Ultimate_GAA_Contact_Or_Owner, Created_User_Name_Issue, Rating, SOX_Type, Entity_Sector, Entity_Region, Issue_Finding_Source, Area, Impacted_MRC, Impacted_Region, Impacted_Sector, Impacted_Quarter, Mitigating_Control, Repeat_Finding, Global_Control_Reference_Number, Key_Control_Failure, Business_Contact_Recommendations, Recommendation_State, Issue_Status_Sld, Sld_Issue_Status_With_Overdue, Open_And_Overdue_Flag, Issue_Finding_Type, Common_Insights, Business_Contact_Issue, MRC_Company_Contact, MRC_Country_Code, Accountable_Contact_Issue, Frequency, GS_MRC_Flag, Supply_Chain_MRC_Flag, IT_Cycle_Flag, In_Scope_For_SOX_Testing, Issue_Created_within_Last_30_Days, Issue_Created_Within_Past_Month, Issue_Finding_Cause_Type, Issue_Finding_State, Issue_Finding_State_Subaction, Manager_Issue, Orgpath, RecommendationsStateSubaction, Remediation_Details__Evidence, Report_Reference, Reviewer_Issue, Root_Cause_Insights, Control_Category, Control_Method, Control_Name, Control_State, Risk_Category, IT_Assets, IT_Asset_GAA_IT_Manager, Process_Based_Org, Test_Category, Test_Procedure_Title, Compliance_Observer_Recommendation, IT_Asset_Accountable_Sector
+
+Text-heavy columns (8):
+Issue_Finding_Title, Finding, Summary_Finding_Exec_Summary, Recommendation_Details, Recommendation_Title, Management_Response, design documentation ensures control design endures personnel changes and is understood by all stakeholders. This attribute is especially important for newly designed processes and controls., Root_Cause_Description
+
+First 20 columns:
+Audit_Year, ISRM Reportable, Root Cause defined, TS vs BIS/BT, Critical Issue by CTRL Design, IsReleased, SOX_Reportable, RBR_Vs_SOX_Vs_Pwc, Issue_Status_SOX_Cert, Issue_Status_SOX_Short, Finance_Or_IT, Accountable_Function, Oso_Finance_Audit_Manager, Oso_SOX_Testing_Ownership, MRC_Subgroup_For_GAA_Tested_Entities, MRC_4_Digit, Entity, Assessment_Title, IssueId, Release_Date
