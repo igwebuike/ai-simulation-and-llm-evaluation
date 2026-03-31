@@ -63,9 +63,22 @@ COLUMN_ALIASES = {
     "issue_status_sox_short": ["Issue_Status_SOX_Short"],
 }
 
-
 YES_VALUES = {"yes", "y", "true", "1", "x", "in scope", "sox", "reportable"}
 MISSING_LABEL = "Missing / Not Provided"
+
+SEVERITY_COLOR_MAP = {
+    "critical": "#d62728",              # red
+    "major": "#ff7f0e",                 # orange
+    "minor": "#f2c94c",                 # gold
+    "medium": "#ff7f0e",                # orange
+    "moderate": "#ff7f0e",              # orange
+    "low": "#2ca02c",                   # green
+    "missing / not provided": "#9e9e9e",
+    "unknown": "#9e9e9e",
+    "nan": "#9e9e9e",
+}
+
+DEFAULT_BLUE = "#4e79a7"
 
 
 def auto_find_dataset(explicit_path: Optional[str]) -> Path:
@@ -211,17 +224,44 @@ def monthly_counts(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return pd.DataFrame({"Month": [str(x) for x in counts.index], "Count": counts.values})
 
 
+def get_series_colors(labels) -> List[str]:
+    colors = []
+    for label in labels:
+        key = str(label).strip().lower()
+        colors.append(SEVERITY_COLOR_MAP.get(key, DEFAULT_BLUE))
+    return colors
+
+
+def get_stacked_colors(columns) -> List[str]:
+    return [SEVERITY_COLOR_MAP.get(str(col).strip().lower(), DEFAULT_BLUE) for col in columns]
+
+
+def reorder_severity_columns(cols: List[str]) -> List[str]:
+    preferred = ["Critical", "Major", "Minor", "Medium", "Moderate", "Low", MISSING_LABEL]
+    found = [c for c in preferred if c in cols]
+    remainder = [c for c in cols if c not in found]
+    return found + remainder
+
+
 def save_barh(data: pd.DataFrame, category_col: str, value_col: str, title: str, path: Path) -> None:
     if data.empty:
         raise ValueError("No data to plot.")
 
     fig_h = max(5, len(data) * 0.45)
     fig, ax = plt.subplots(figsize=(11, fig_h))
-    bars = ax.barh(data[category_col].astype(str), data[value_col].astype(float))
+
+    colors = get_series_colors(data[category_col].tolist())
+    bars = ax.barh(
+        data[category_col].astype(str),
+        data[value_col].astype(float),
+        color=colors,
+    )
+
     ax.invert_yaxis()
     ax.set_title(title, loc="left")
     ax.set_xlabel(value_col)
     ax.set_ylabel("")
+    ax.grid(axis="x", alpha=0.20)
 
     max_val = float(data[value_col].max())
     offset = max(1, max_val * 0.01)
@@ -230,7 +270,6 @@ def save_barh(data: pd.DataFrame, category_col: str, value_col: str, title: str,
         label = f"{int(value):,}" if float(value).is_integer() else f"{value:,.1f}"
         ax.text(float(value) + offset, bar.get_y() + bar.get_height() / 2, label, va="center")
 
-    ax.grid(axis="x", alpha=0.20)
     plt.tight_layout()
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
@@ -241,7 +280,7 @@ def save_line(data: pd.DataFrame, x_col: str, y_col: str, title: str, path: Path
         raise ValueError("No data to plot.")
 
     fig, ax = plt.subplots(figsize=(11, 5))
-    ax.plot(data[x_col], data[y_col], marker="o", linewidth=2)
+    ax.plot(data[x_col], data[y_col], marker="o", linewidth=2, color=DEFAULT_BLUE)
     ax.set_title(title, loc="left")
     ax.set_xlabel(x_col)
     ax.set_ylabel(y_col)
@@ -256,8 +295,14 @@ def save_stacked_bar(data: pd.DataFrame, title: str, path: Path, xlabel: str, yl
     if data.empty:
         raise ValueError("No data to plot.")
 
+    data = data.copy()
+    ordered_cols = reorder_severity_columns(list(data.columns))
+    data = data[ordered_cols]
+    colors = get_stacked_colors(data.columns)
+
     fig, ax = plt.subplots(figsize=(11, 6))
-    data.plot(kind="bar", stacked=True, ax=ax)
+    data.plot(kind="bar", stacked=True, ax=ax, color=colors)
+
     ax.set_title(title, loc="left")
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
@@ -377,6 +422,9 @@ def report_issue_mix(df: pd.DataFrame, outdir: Path, scope_text: str) -> None:
 
     if "rating" in df.columns:
         data = top_counts(df, "rating", 10)
+        ordered = reorder_severity_columns(data["rating"].tolist())
+        data["rating"] = pd.Categorical(data["rating"], categories=ordered, ordered=True)
+        data = data.sort_values("rating")
         save_barh(data, "rating", "Count", f"Issue Mix by Rating ({scope_text})", outdir / "03_issue_mix_by_rating.png")
 
 
@@ -495,6 +543,7 @@ def report_deep_dive(df: pd.DataFrame, outdir: Path, scope_text: str) -> None:
         temp = df.copy()
         temp["rating"] = clean_text_series(temp["rating"])
         temp["issue_finding_type"] = clean_text_series(temp["issue_finding_type"])
+
         pivot = temp.pivot_table(
             index="issue_finding_type",
             columns="rating",
@@ -502,8 +551,16 @@ def report_deep_dive(df: pd.DataFrame, outdir: Path, scope_text: str) -> None:
             aggfunc="count",
             fill_value=0,
         )
+
         if not pivot.empty:
-            save_stacked_bar(pivot, f"Finding Type by Rating ({scope_text})", outdir / "25_finding_type_by_rating.png", "Finding Type", "Issue Count")
+            pivot = pivot[reorder_severity_columns(list(pivot.columns))]
+            save_stacked_bar(
+                pivot,
+                f"Finding Type by Rating ({scope_text})",
+                outdir / "25_finding_type_by_rating.png",
+                "Finding Type",
+                "Issue Count",
+            )
 
     business_col = get_business_contact_col(df)
     if business_col and "rating" in df.columns:
@@ -512,6 +569,7 @@ def report_deep_dive(df: pd.DataFrame, outdir: Path, scope_text: str) -> None:
         temp["rating"] = clean_text_series(temp["rating"])
         top_items = temp[business_col].value_counts().head(10).index.tolist()
         temp = temp[temp[business_col].isin(top_items)]
+
         pivot = temp.pivot_table(
             index=business_col,
             columns="rating",
@@ -519,8 +577,16 @@ def report_deep_dive(df: pd.DataFrame, outdir: Path, scope_text: str) -> None:
             aggfunc="count",
             fill_value=0,
         )
+
         if not pivot.empty:
-            save_stacked_bar(pivot, f"Top Business Contacts by Rating Mix ({scope_text})", outdir / "26_business_contacts_by_rating_mix.png", "Business Contact", "Issue Count")
+            pivot = pivot[reorder_severity_columns(list(pivot.columns))]
+            save_stacked_bar(
+                pivot,
+                f"Top Business Contacts by Rating Mix ({scope_text})",
+                outdir / "26_business_contacts_by_rating_mix.png",
+                "Business Contact",
+                "Issue Count",
+            )
 
 
 def report_notes(df: pd.DataFrame, outdir: Path, scope_text: str) -> None:
