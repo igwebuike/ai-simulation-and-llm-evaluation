@@ -1,96 +1,138 @@
 import argparse
 from pathlib import Path
-from typing import Optional, List, Callable, Tuple
+from typing import Optional, Dict, List, Tuple
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
 
+# -----------------------------
+# Config
+# -----------------------------
+PREFERRED_SHEETS = ["RAW", "Raw", "raw", "Sheet1"]
+
 DATE_CANDIDATES = [
-    "Release_Date",
-    "Create_Date",
     "Issue_Creation_Date",
-    "Expected_Closure_Date",
     "Issue_Closed_Date",
-    "Final_Month_Snapshot",
     "Expected_Due_Date",
     "Revised_Due_Date",
     "Initial_Agreed_Remediation_Date",
+    "Final_Month_Snapshot",
 ]
 
 COLUMN_ALIASES = {
-    "Record_ID": ["Record_ID", "record_id", "ID", "Issue_ID"],
-    "MRC_ID": ["MRC_ID", "MRC Id", "MRC", "MRC_Reference", "Impacted_MRC"],
-    "Issue_Finding_Type": [
-        "Issue_Finding_Type",
-        "Issue Finding Type",
-        "Issue_Finding_Typ",
-        "Issue_Finding_Ty",
-        "Issue_Finding",
-        "Finding",
-    ],
+    "Record_ID": ["Record_ID", "ID", "Issue_ID"],
+    "Issue_Finding_Type": ["Issue_Finding_Type", "Finding", "Issue Finding Type"],
+    "Issue_Finding_State": ["Issue_Finding_State", "Issue State", "Status"],
+    "Issue_Finding_State_Subaction": ["Issue_Finding_State_Subaction"],
+    "Issue_Creation_Date": ["Issue_Creation_Date"],
+    "Issue_Closed_Date": ["Issue_Closed_Date"],
+    "Expected_Due_Date": ["Expected_Due_Date", "Due_Date_Sld"],
+    "Revised_Due_Date": ["Revised_Due_Date"],
+    "Final_Month_Snapshot": ["Final_Month_Snapshot"],
+    "Snapshot_Year": ["Snapshot_Year"],
+    "Days_Old": ["Days_Old"],
+    "Days_Until_Due": ["Days_Until_Due"],
+    "Overdue_Flag": ["Overdue_Flag", "Flag_3_Open_and_Overdue", "Open_And_Overdue_Flag"],
+    "Repeat_Finding": ["Repeat_Finding"],
+    "Rating": ["Rating", "Alert_1_Rating_Verbal", "Severity"],
+    "Global_Control_Reference": ["Global_Control_Reference", "Global_Control_Reference_Number", "ControlId"],
+    "Control_Name": ["Control_Name"],
+    "Control_Category": ["Control_Category"],
     "Manager_Issue": [
         "Manager_Issue",
-        "Manager Issue",
-        "Control Owner",
-        "Issue Owner",
-        "Manager",
         "Business_Contact_Issue",
-        "MRC_Company_Contact",
         "Accountable_Contact_Issue",
+        "MRC_Company_Contact",
     ],
-    "Global_Control_Reference": [
-        "Global_Control_Reference",
-        "Global Control Reference",
-        "Global_Contr",
-        "Global_Control",
-        "Control Reference",
-        "Global_Contro",
-        "Global_Control_Reference_Number",
-        "ControlId",
-    ],
-    "Repeat_Finding": [
-        "Repeat_Finding",
-        "Repeat Finding",
-        "Repeat_Finding_Flag",
-    ],
-    "Oversight_Error_Flag": [
-        "Oversight_Error_Flag",
-        "Oversight Error Flag",
-        "Oversight_Error",
-        "Key_Control_Oversight_Error",
-        "Key_Control_Failure",
-    ],
-    "SOX_Certificate_Issue_Flag": [
-        "SOX_Certificate_Issue_Flag",
-        "SOX Certificate Issue Flag",
-        "SOX_Certificate_Issue",
-        "SOX_Cert_Issue_Flag",
-        "In_Scope_For_SOX_Testing",
-        "GS_MRC_Flag",
-    ],
-    "Rating": [
-        "Rating",
-        "Severity",
-        "Issue Rating",
-        "Alert_1_Rating_Verbal",
-    ],
-    "Snapshot_Year": [
-        "Snapshot_Year",
-        "Year",
-        "Snapshot Year",
-        "Repeat_Year",
-    ],
+    "MRC_ID": ["MRC_ID", "Impacted_MRC"],
+    "Impacted_Sector": ["Impacted_Sector", "IT_Asset_Accountable_Sector"],
+    "Impacted_Region": ["Impacted_Region"],
+    "SOX_Flag": ["In_Scope_For_SOX_Testing", "GS_MRC_Flag", "SOX_Certificate_Issue_Flag"],
+    "Root_Cause_Description": ["Root_Cause_Description"],
+    "Root_Cause_Insights": ["Root_Cause_Insights"],
+    "Management_Response": ["Management_Response"],
+    "Recommendation_Title": ["Recommendation_Title"],
+    "Recommendation_State": ["Recommendation_State", "Remediation_Status"],
+    "Released": ["Released"],
+    "Open_Critical_Issues_Sld_Flag": ["Open_Critical_Issues_Sld_Flag"],
+    "Open_Major_Issues_Sld": ["Open_Major_Issues_Sld"],
 }
 
+REPORT_FOLDERS = [
+    "01_executive_summary",
+    "02_issue_volume_trends",
+    "03_aging_due_overdue",
+    "04_control_hotspots",
+    "05_owner_accountability",
+    "06_sox_compliance",
+    "07_data_quality_appendix",
+]
 
-def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def auto_find_dataset(explicit_path: Optional[str]) -> Path:
+    if explicit_path:
+        path = Path(explicit_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Dataset not found: {path}")
+        return path
+
+    here = Path(__file__).resolve().parent
+
+    preferred_names = [
+        "ISRM Report (Primary Data Source).xlsx",
+        "ISRM Report (Primary Data Source).csv",
+    ]
+    for name in preferred_names:
+        candidate = here / name
+        if candidate.exists():
+            return candidate
+
+    for pattern in ("*.xlsx", "*.xlsm", "*.xls", "*.csv"):
+        files = sorted(here.glob(pattern))
+        if files:
+            return files[0]
+
+    raise FileNotFoundError("No dataset found in the script folder.")
+
+
+def choose_sheet(xls: pd.ExcelFile) -> str:
+    for sheet in PREFERRED_SHEETS:
+        if sheet in xls.sheet_names:
+            return sheet
+    return xls.sheet_names[0]
+
+
+def load_dataset(path: Path) -> Tuple[pd.DataFrame, str]:
+    suffix = path.suffix.lower()
+
+    if suffix == ".csv":
+        df = pd.read_csv(path)
+        return df, "CSV"
+
+    if suffix in {".xlsx", ".xlsm", ".xls"}:
+        xls = pd.ExcelFile(path)
+        sheet_name = choose_sheet(xls)
+        df = pd.read_excel(path, sheet_name=sheet_name)
+        return df, sheet_name
+
+    raise ValueError(f"Unsupported file type: {path.suffix}")
+
+
+def normalize_headers(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
+    df.columns = [str(c).strip().replace("\n", " ").replace("\r", " ") for c in df.columns]
+    return df
 
-    rename_map = {}
+
+def apply_aliases(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
     lower_map = {str(c).strip().lower(): c for c in df.columns}
+    rename_map = {}
 
     for canonical, aliases in COLUMN_ALIASES.items():
         for alias in aliases:
@@ -104,137 +146,128 @@ def normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     if "Record_ID" not in df.columns:
         df["Record_ID"] = range(1, len(df) + 1)
 
-    if "Snapshot_Year" not in df.columns:
-        if "Final_Month_Snapshot" in df.columns:
-            df["Snapshot_Year"] = pd.to_datetime(
-                df["Final_Month_Snapshot"], errors="coerce"
-            ).dt.year
-        elif "Issue_Creation_Date" in df.columns:
-            df["Snapshot_Year"] = pd.to_datetime(
-                df["Issue_Creation_Date"], errors="coerce"
-            ).dt.year
-        elif "Create_Date" in df.columns:
-            df["Snapshot_Year"] = pd.to_datetime(
-                df["Create_Date"], errors="coerce"
-            ).dt.year
-
-    return df
-
-
-def auto_find_dataset(explicit_path: Optional[str]) -> Path:
-    if explicit_path:
-        path = Path(explicit_path)
-        if not path.exists():
-            raise FileNotFoundError(f"Dataset not found: {path}")
-        return path
-
-    here = Path(__file__).resolve().parent
-
-    preferred_names = [
-        "ISRM Report (Primary Data Source).xlsx",
-        "ISRM Report (Primary Data Source).csv",
-        "isrm_sample_dataset.xlsx",
-        "isrm_sample_dataset.csv",
-    ]
-
-    for name in preferred_names:
-        candidate = here / name
-        if candidate.exists():
-            return candidate
-
-    xlsx_files = sorted(here.glob("*.xlsx"))
-    csv_files = sorted(here.glob("*.csv"))
-
-    for group in (xlsx_files, csv_files):
-        if group:
-            return group[0]
-
-    raise FileNotFoundError(
-        "No dataset file found in the script folder. Put an .xlsx or .csv file there, "
-        "or pass the path explicitly."
-    )
-
-
-def load_excel_dataset(path: Path) -> pd.DataFrame:
-    xls = pd.ExcelFile(path)
-    preferred_sheet = "RAW" if "RAW" in xls.sheet_names else xls.sheet_names[0]
-    df = pd.read_excel(path, sheet_name=preferred_sheet)
-    return df
-
-
-def load_dataset(path: Path) -> pd.DataFrame:
-    suffix = path.suffix.lower()
-
-    if suffix == ".csv":
-        df = pd.read_csv(path)
-    elif suffix in {".xlsx", ".xlsm", ".xls"}:
-        df = load_excel_dataset(path)
-    else:
-        raise ValueError(f"Unsupported file type: {path.suffix}")
-
-    df = normalize_columns(df)
-
     for col in DATE_CANDIDATES:
         if col in df.columns:
             df[col] = pd.to_datetime(df[col], errors="coerce")
 
-    for col in ["Repeat_Finding", "Oversight_Error_Flag", "SOX_Certificate_Issue_Flag"]:
-        if col in df.columns:
-            df[col] = (
-                df[col]
-                .astype(str)
-                .str.strip()
-                .replace(
-                    {
-                        "True": "YES",
-                        "False": "NO",
-                        "true": "YES",
-                        "false": "NO",
-                        "1": "YES",
-                        "0": "NO",
-                        "Y": "YES",
-                        "N": "NO",
-                        "Yes": "YES",
-                        "No": "NO",
-                    }
-                )
-            )
+    if "Snapshot_Year" not in df.columns and "Final_Month_Snapshot" in df.columns:
+        df["Snapshot_Year"] = pd.to_datetime(df["Final_Month_Snapshot"], errors="coerce").dt.year
 
     return df
 
 
-def require_columns(df: pd.DataFrame, needed: List[str], chart_name: str) -> None:
-    missing = [c for c in needed if c not in df.columns]
-    if missing:
-        raise KeyError(
-            f"{chart_name} cannot run because these columns are missing: {missing}. "
-            f"Available columns are: {list(df.columns)}"
-        )
-
-
-def save_table_image(
-    df: pd.DataFrame,
-    title: str,
-    path: Path,
-    fontsize: int = 10,
-    scale: Tuple[float, float] = (1, 1.4),
-    highlight_max: bool = False,
-) -> None:
-    fig, ax = plt.subplots(
-        figsize=(max(8, df.shape[1] * 1.8), max(3, df.shape[0] * 0.55))
+def clean_flag_series(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.strip().str.lower()
+    return s.replace(
+        {
+            "yes": "YES",
+            "y": "YES",
+            "true": "YES",
+            "1": "YES",
+            "x": "YES",
+            "no": "NO",
+            "n": "NO",
+            "false": "NO",
+            "0": "NO",
+            "nan": "NO",
+            "": "NO",
+        }
     )
+
+
+def ensure_dirs(base_dir: Path) -> Dict[str, Path]:
+    base_dir.mkdir(parents=True, exist_ok=True)
+    out = {}
+    for folder in REPORT_FOLDERS:
+        path = base_dir / folder
+        path.mkdir(parents=True, exist_ok=True)
+        out[folder] = path
+    return out
+
+
+def save_barh(series: pd.Series, title: str, xlabel: str, output: Path, max_items: int = 12) -> None:
+    s = series.head(max_items)
+    if s.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(10, max(5, len(s) * 0.45)))
+    ax.barh(s.index.astype(str), s.values)
+    ax.invert_yaxis()
+    ax.set_title(title, fontsize=14, fontweight="bold", loc="left")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel("")
+    for i, v in enumerate(s.values):
+        ax.text(v, i, f" {int(v):,}", va="center", fontsize=9)
+    plt.tight_layout()
+    fig.savefig(output, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_vertical_bar(series: pd.Series, title: str, ylabel: str, output: Path) -> None:
+    if series.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(10, 5.5))
+    ax.bar(series.index.astype(str), series.values)
+    ax.set_title(title, fontsize=14, fontweight="bold", loc="left")
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=45)
+    for i, v in enumerate(series.values):
+        ax.text(i, v, f"{int(v):,}", ha="center", va="bottom", fontsize=9)
+    plt.tight_layout()
+    fig.savefig(output, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_line(series: pd.Series, title: str, ylabel: str, output: Path) -> None:
+    if series.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(11, 5.5))
+    ax.plot(series.index.astype(str), series.values, marker="o", linewidth=2)
+    ax.set_title(title, fontsize=14, fontweight="bold", loc="left")
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=45)
+    plt.tight_layout()
+    fig.savefig(output, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_stacked_bar(df_plot: pd.DataFrame, title: str, ylabel: str, output: Path) -> None:
+    if df_plot.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(11, 6))
+    df_plot.plot(kind="bar", stacked=True, ax=ax)
+    ax.set_title(title, fontsize=14, fontweight="bold", loc="left")
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=45)
+    ax.legend(title="", bbox_to_anchor=(1.02, 1), loc="upper left")
+    plt.tight_layout()
+    fig.savefig(output, dpi=220, bbox_inches="tight")
+    plt.close(fig)
+
+
+def save_table_image(df_table: pd.DataFrame, title: str, output: Path) -> None:
+    if df_table.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(max(8, df_table.shape[1] * 1.8), max(3, df_table.shape[0] * 0.55)))
     ax.axis("off")
     ax.set_title(title, fontsize=14, fontweight="bold", loc="left", pad=12)
 
     table = ax.table(
-        cellText=df.values,
-        colLabels=df.columns,
+        cellText=df_table.values,
+        colLabels=df_table.columns,
         cellLoc="center",
         loc="upper left",
     )
     table.auto_set_font_size(False)
-    table.set_fontsize(fontsize)
-    table.scale(*scale)
+    table.set_fontsize(9)
+    table.scale(1, 1.35)
 
     for (row, col), cell in table.get_celld().items():
         if row == 0:
@@ -244,330 +277,412 @@ def save_table_image(
             cell.set_facecolor("#F3F6FA")
             cell.set_text_props(weight="bold")
 
-    if highlight_max and df.shape[0] > 0 and df.shape[1] > 1:
-        vals = df.iloc[:, 1:].copy()
-        vals_numeric = vals.apply(pd.to_numeric, errors="coerce")
-        if vals_numeric.size > 0:
-            max_val = np.nanmax(vals_numeric.values)
-            if pd.notna(max_val):
-                for i in range(vals_numeric.shape[0]):
-                    for j in range(vals_numeric.shape[1]):
-                        if (
-                            pd.notna(vals_numeric.iat[i, j])
-                            and vals_numeric.iat[i, j] == max_val
-                        ):
-                            table[(i + 1, j + 1)].set_facecolor("#F9E79F")
-
     plt.tight_layout()
-    fig.savefig(path, dpi=220, bbox_inches="tight")
+    fig.savefig(output, dpi=220, bbox_inches="tight")
     plt.close(fig)
 
 
-def chart_issues_summary_by_type_grouped_by_mrc(df: pd.DataFrame, outdir: Path) -> None:
-    chart_name = "Issues Summary by Type grouped by MRC"
-    require_columns(df, ["MRC_ID", "Issue_Finding_Type", "Record_ID"], chart_name)
-
-    plot_df = df.copy()
-    plot_df["MRC_ID"] = plot_df["MRC_ID"].fillna("Unknown")
-    plot_df["Issue_Finding_Type"] = plot_df["Issue_Finding_Type"].fillna("Unknown")
-
-    pivot = plot_df.pivot_table(
-        index="MRC_ID",
-        columns="Issue_Finding_Type",
-        values="Record_ID",
-        aggfunc="count",
-        fill_value=0,
-    )
-
-    desired = [
-        c
-        for c in ["Operating Effectiveness", "Design Effectiveness", "Documentation"]
-        if c in pivot.columns
-    ]
-    if desired:
-        pivot = pivot[desired]
-
-    if pivot.empty:
-        raise ValueError(f"{chart_name} produced no data to plot.")
-
-    fig, ax = plt.subplots(figsize=(10, 6))
-    pivot.plot(kind="barh", stacked=True, ax=ax)
-    ax.set_title(
-        "Issues Summary by Type, grouped by MRC",
-        fontsize=14,
-        fontweight="bold",
-        loc="left",
-    )
-    ax.set_xlabel("Issue Count")
-    ax.set_ylabel("MRC")
-    ax.legend(title="Issue Type", bbox_to_anchor=(1.02, 1), loc="upper left")
-    plt.tight_layout()
-    fig.savefig(outdir / "01_issues_summary_by_type_grouped_by_mrc.png", dpi=220, bbox_inches="tight")
-    plt.close(fig)
+def add_summary_metric(records: List[Dict[str, object]], metric: str, value: object) -> None:
+    records.append({"Metric": metric, "Value": value})
 
 
-def chart_repeat_findings_by_owner_and_control(df: pd.DataFrame, outdir: Path) -> None:
-    chart_name = "Repeat Findings by Owner and Control"
-    require_columns(
-        df,
-        ["Repeat_Finding", "Manager_Issue", "Global_Control_Reference", "Record_ID"],
-        chart_name,
-    )
+# -----------------------------
+# Report sections
+# -----------------------------
+def create_executive_summary(df: pd.DataFrame, outdir: Path) -> pd.DataFrame:
+    metrics = []
 
-    rpt = df[df["Repeat_Finding"].astype(str).str.upper() == "YES"].copy()
-    if rpt.empty:
-        raise ValueError(f"{chart_name} found no rows with Repeat_Finding = YES.")
+    add_summary_metric(metrics, "Total records", len(df))
+    add_summary_metric(metrics, "Columns", len(df.columns))
 
-    rpt["Manager_Issue"] = rpt["Manager_Issue"].fillna("Unknown")
-    rpt["Global_Control_Reference"] = rpt["Global_Control_Reference"].fillna("Unknown")
+    if "Issue_Finding_State" in df.columns:
+        open_like = df["Issue_Finding_State"].astype(str).str.lower().str.contains("open", na=False).sum()
+        closed_like = df["Issue_Finding_State"].astype(str).str.lower().str.contains("closed", na=False).sum()
+        add_summary_metric(metrics, "Open-like issues", int(open_like))
+        add_summary_metric(metrics, "Closed-like issues", int(closed_like))
 
-    pivot = rpt.pivot_table(
-        index="Manager_Issue",
-        columns="Global_Control_Reference",
-        values="Record_ID",
-        aggfunc="count",
-        fill_value=0,
-    ).reset_index()
-
-    if pivot.empty:
-        raise ValueError(f"{chart_name} produced no data.")
-
-    save_table_image(
-        pivot,
-        "Repeat Findings by Control Owner, grouped by Control Reference",
-        outdir / "02_repeat_findings_by_control_owner_grouped_by_control_reference.png",
-        highlight_max=True,
-    )
-
-
-def chart_oversight_error_by_owner_and_control(df: pd.DataFrame, outdir: Path) -> None:
-    chart_name = "Oversight Error by Owner and Control"
-    require_columns(
-        df,
-        ["Oversight_Error_Flag", "Manager_Issue", "Global_Control_Reference", "Record_ID"],
-        chart_name,
-    )
-
-    ov = df[df["Oversight_Error_Flag"].astype(str).str.upper() == "YES"].copy()
-    if ov.empty:
-        raise ValueError(f"{chart_name} found no rows with Oversight_Error_Flag = YES.")
-
-    ov["Manager_Issue"] = ov["Manager_Issue"].fillna("Unknown")
-    ov["Global_Control_Reference"] = ov["Global_Control_Reference"].fillna("Unknown")
-
-    pivot = ov.pivot_table(
-        index="Manager_Issue",
-        columns="Global_Control_Reference",
-        values="Record_ID",
-        aggfunc="count",
-        fill_value=0,
-    ).reset_index()
-
-    if pivot.empty:
-        raise ValueError(f"{chart_name} produced no data.")
-
-    save_table_image(
-        pivot,
-        "Oversight Error by Control Owner, grouped by Control Reference",
-        outdir / "03_oversight_error_by_control_owner_grouped_by_control_reference.png",
-        highlight_max=True,
-    )
-
-
-def chart_total_issues_by_control_reference(df: pd.DataFrame, outdir: Path) -> None:
-    chart_name = "Total Issues by Control Reference"
-    require_columns(df, ["Global_Control_Reference"], chart_name)
-
-    series = df["Global_Control_Reference"].fillna("Unknown").astype(str)
-    counts = (
-        series.value_counts()
-        .rename_axis("Global_Control_Reference")
-        .reset_index(name="Issue Count")
-    )
-
-    if counts.empty:
-        raise ValueError(f"{chart_name} produced no data.")
-
-    fig, ax = plt.subplots(figsize=(10, max(5.5, len(counts) * 0.35)))
-    bars = ax.barh(counts["Global_Control_Reference"], counts["Issue Count"])
-    ax.invert_yaxis()
-    ax.set_title(
-        "Total Number of Issues by Control Reference",
-        fontsize=14,
-        fontweight="bold",
-        loc="left",
-    )
-    ax.set_xlabel("Issue Count")
-
-    top3 = counts.head(3).index.tolist()
-    for i, b in enumerate(bars):
-        if i in top3:
-            b.set_alpha(0.9)
-            b.set_hatch("//")
-        ax.text(
-            b.get_width() + 0.3,
-            b.get_y() + b.get_height() / 2,
-            f"{int(b.get_width())}",
-            va="center",
-            fontsize=9,
+        status_counts = df["Issue_Finding_State"].fillna("Unknown").astype(str).value_counts()
+        save_barh(
+            status_counts,
+            "Issue Count by Status",
+            "Issue Count",
+            outdir / "executive_issue_count_by_status.png",
+            max_items=12,
         )
 
-    plt.tight_layout()
-    fig.savefig(outdir / "04_total_number_of_issues_by_control_reference.png", dpi=220, bbox_inches="tight")
-    plt.close(fig)
+    if "Rating" in df.columns:
+        rating_counts = df["Rating"].fillna("Unknown").astype(str).value_counts()
+        add_summary_metric(metrics, "Distinct ratings", int(rating_counts.shape[0]))
+        save_vertical_bar(
+            rating_counts,
+            "Issue Count by Rating",
+            "Issue Count",
+            outdir / "executive_issue_count_by_rating.png",
+        )
+
+    if "Repeat_Finding" in df.columns:
+        repeat_counts = clean_flag_series(df["Repeat_Finding"]).value_counts()
+        repeat_yes = int(repeat_counts.get("YES", 0))
+        add_summary_metric(metrics, "Repeat findings", repeat_yes)
+
+    if "Overdue_Flag" in df.columns:
+        overdue_counts = clean_flag_series(df["Overdue_Flag"]).value_counts()
+        overdue_yes = int(overdue_counts.get("YES", 0))
+        add_summary_metric(metrics, "Overdue issues", overdue_yes)
+
+    summary_df = pd.DataFrame(metrics)
+    summary_df.to_excel(outdir / "executive_summary_metrics.xlsx", index=False)
+    save_table_image(summary_df, "Executive Summary Metrics", outdir / "executive_summary_metrics.png")
+    return summary_df
 
 
-def chart_sox_yoy_summary(df: pd.DataFrame, outdir: Path) -> None:
-    chart_name = "SOX YoY Summary"
-    require_columns(
-        df,
-        ["SOX_Certificate_Issue_Flag", "Rating", "Snapshot_Year", "Record_ID"],
-        chart_name,
-    )
+def create_issue_volume_trends(df: pd.DataFrame, outdir: Path) -> None:
+    if "Issue_Creation_Date" in df.columns:
+        created = pd.to_datetime(df["Issue_Creation_Date"], errors="coerce").dropna()
+        if not created.empty:
+            created_monthly = created.dt.to_period("M").value_counts().sort_index()
+            created_monthly.index = created_monthly.index.astype(str)
+            save_line(
+                created_monthly,
+                "Issues Created Over Time",
+                "Issue Count",
+                outdir / "issues_created_over_time.png",
+            )
 
-    sox = df[df["SOX_Certificate_Issue_Flag"].astype(str).str.upper() == "YES"].copy()
-    if sox.empty:
-        raise ValueError(f"{chart_name} found no rows with SOX_Certificate_Issue_Flag = YES.")
+    if "Issue_Closed_Date" in df.columns:
+        closed = pd.to_datetime(df["Issue_Closed_Date"], errors="coerce").dropna()
+        if not closed.empty:
+            closed_monthly = closed.dt.to_period("M").value_counts().sort_index()
+            closed_monthly.index = closed_monthly.index.astype(str)
+            save_line(
+                closed_monthly,
+                "Issues Closed Over Time",
+                "Issue Count",
+                outdir / "issues_closed_over_time.png",
+            )
 
-    sox["Rating"] = sox["Rating"].fillna("Unknown")
-    sox = sox[sox["Snapshot_Year"].notna()].copy()
+    if "Issue_Finding_Type" in df.columns:
+        finding_counts = df["Issue_Finding_Type"].fillna("Unknown").astype(str).value_counts()
+        save_barh(
+            finding_counts,
+            "Issue Count by Finding Type",
+            "Issue Count",
+            outdir / "issue_count_by_finding_type.png",
+            max_items=15,
+        )
 
-    if sox.empty:
-        raise ValueError(f"{chart_name} has no usable Snapshot_Year values.")
+    if "Snapshot_Year" in df.columns and "Rating" in df.columns:
+        yearly = df.dropna(subset=["Snapshot_Year"]).copy()
+        if not yearly.empty:
+            pivot = yearly.pivot_table(
+                index="Snapshot_Year",
+                columns="Rating",
+                values="Record_ID",
+                aggfunc="count",
+                fill_value=0,
+            )
+            if not pivot.empty:
+                save_stacked_bar(
+                    pivot,
+                    "Issue Volume by Year and Rating",
+                    "Issue Count",
+                    outdir / "issue_volume_by_year_and_rating.png",
+                )
 
-    summary = sox.pivot_table(
-        index="Rating",
-        columns="Snapshot_Year",
-        values="Record_ID",
-        aggfunc="count",
-        fill_value=0,
-    )
 
-    order = [idx for idx in ["Critical", "Major", "Minor"] if idx in summary.index]
-    remaining = [idx for idx in summary.index if idx not in order]
-    summary = summary.reindex(order + remaining)
+def create_aging_due_overdue(df: pd.DataFrame, outdir: Path) -> None:
+    if "Days_Old" in df.columns:
+        days_old = pd.to_numeric(df["Days_Old"], errors="coerce").dropna()
+        if not days_old.empty:
+            bins = [-np.inf, 30, 60, 90, 180, np.inf]
+            labels = ["0-30", "31-60", "61-90", "91-180", "181+"]
+            aging = pd.cut(days_old, bins=bins, labels=labels).value_counts().sort_index()
+            save_vertical_bar(
+                aging,
+                "Issue Aging Buckets",
+                "Issue Count",
+                outdir / "issue_aging_buckets.png",
+            )
 
-    summary.loc["Total"] = summary.sum(axis=0)
+    if "Days_Until_Due" in df.columns:
+        days_until_due = pd.to_numeric(df["Days_Until_Due"], errors="coerce").dropna()
+        if not days_until_due.empty:
+            bins = [-np.inf, 0, 7, 30, 60, np.inf]
+            labels = ["Overdue", "Due in 1-7", "Due in 8-30", "Due in 31-60", "60+"]
+            due_buckets = pd.cut(days_until_due, bins=bins, labels=labels).value_counts().sort_index()
+            save_vertical_bar(
+                due_buckets,
+                "Due Date Buckets",
+                "Issue Count",
+                outdir / "due_date_buckets.png",
+            )
 
-    years = list(summary.columns)
-    if len(years) >= 2:
-        latest = years[-1]
-        prev = years[-2]
-        yoy = ((summary[latest] - summary[prev]) / summary[prev].replace(0, np.nan)).round(3)
-        summary["YoY vs Prior"] = yoy.map(lambda x: "" if pd.isna(x) else f"{x:.0%}")
+    if "Overdue_Flag" in df.columns:
+        overdue = clean_flag_series(df["Overdue_Flag"]).value_counts()
+        save_vertical_bar(
+            overdue,
+            "Overdue vs Not Overdue",
+            "Issue Count",
+            outdir / "overdue_flag_distribution.png",
+        )
 
-    table_df = summary.reset_index().rename(columns={"index": "Severity", "Rating": "Severity"})
+    if "Expected_Due_Date" in df.columns:
+        due = pd.to_datetime(df["Expected_Due_Date"], errors="coerce").dropna()
+        if not due.empty:
+            due_monthly = due.dt.to_period("M").value_counts().sort_index()
+            due_monthly.index = due_monthly.index.astype(str)
+            save_line(
+                due_monthly,
+                "Expected Due Dates by Month",
+                "Issue Count",
+                outdir / "expected_due_dates_by_month.png",
+            )
+
+
+def create_control_hotspots(df: pd.DataFrame, outdir: Path) -> None:
+    if "Global_Control_Reference" in df.columns:
+        control_counts = df["Global_Control_Reference"].fillna("Unknown").astype(str).value_counts()
+        save_barh(
+            control_counts,
+            "Top Control References by Issue Count",
+            "Issue Count",
+            outdir / "top_control_references.png",
+            max_items=15,
+        )
+
+    if "Control_Category" in df.columns:
+        category_counts = df["Control_Category"].fillna("Unknown").astype(str).value_counts()
+        save_barh(
+            category_counts,
+            "Issue Count by Control Category",
+            "Issue Count",
+            outdir / "issue_count_by_control_category.png",
+            max_items=12,
+        )
+
+    if "Global_Control_Reference" in df.columns and "Rating" in df.columns:
+        top_controls = (
+            df["Global_Control_Reference"].fillna("Unknown").astype(str).value_counts().head(10).index.tolist()
+        )
+        subset = df[df["Global_Control_Reference"].fillna("Unknown").astype(str).isin(top_controls)].copy()
+        pivot = subset.pivot_table(
+            index="Global_Control_Reference",
+            columns="Rating",
+            values="Record_ID",
+            aggfunc="count",
+            fill_value=0,
+        )
+        if not pivot.empty:
+            save_stacked_bar(
+                pivot,
+                "Top Control References by Rating",
+                "Issue Count",
+                outdir / "top_control_references_by_rating.png",
+            )
+
+
+def create_owner_accountability(df: pd.DataFrame, outdir: Path) -> None:
+    if "Manager_Issue" in df.columns:
+        owner_counts = df["Manager_Issue"].fillna("Unknown").astype(str).value_counts()
+        save_barh(
+            owner_counts,
+            "Top Owners by Issue Count",
+            "Issue Count",
+            outdir / "top_owners_by_issue_count.png",
+            max_items=15,
+        )
+
+    if "Manager_Issue" in df.columns and "Overdue_Flag" in df.columns:
+        overdue_mask = clean_flag_series(df["Overdue_Flag"]) == "YES"
+        overdue_by_owner = (
+            df.loc[overdue_mask, "Manager_Issue"].fillna("Unknown").astype(str).value_counts()
+        )
+        save_barh(
+            overdue_by_owner,
+            "Top Owners by Overdue Issues",
+            "Overdue Issue Count",
+            outdir / "top_owners_by_overdue_issues.png",
+            max_items=15,
+        )
+
+    if "Manager_Issue" in df.columns and "Repeat_Finding" in df.columns:
+        repeat_mask = clean_flag_series(df["Repeat_Finding"]) == "YES"
+        repeat_by_owner = (
+            df.loc[repeat_mask, "Manager_Issue"].fillna("Unknown").astype(str).value_counts()
+        )
+        save_barh(
+            repeat_by_owner,
+            "Top Owners by Repeat Findings",
+            "Repeat Finding Count",
+            outdir / "top_owners_by_repeat_findings.png",
+            max_items=15,
+        )
+
+
+def create_sox_compliance(df: pd.DataFrame, outdir: Path) -> None:
+    if "SOX_Flag" in df.columns:
+        sox_counts = clean_flag_series(df["SOX_Flag"]).value_counts()
+        save_vertical_bar(
+            sox_counts,
+            "SOX Scope Distribution",
+            "Issue Count",
+            outdir / "sox_scope_distribution.png",
+        )
+
+    if "SOX_Flag" in df.columns and "Rating" in df.columns:
+        subset = df.copy()
+        subset["SOX_Flag"] = clean_flag_series(subset["SOX_Flag"])
+        pivot = subset.pivot_table(
+            index="SOX_Flag",
+            columns="Rating",
+            values="Record_ID",
+            aggfunc="count",
+            fill_value=0,
+        )
+        if not pivot.empty:
+            save_stacked_bar(
+                pivot,
+                "SOX Scope by Rating",
+                "Issue Count",
+                outdir / "sox_scope_by_rating.png",
+            )
+
+    if "SOX_Flag" in df.columns and "Snapshot_Year" in df.columns:
+        subset = df.copy()
+        subset["SOX_Flag"] = clean_flag_series(subset["SOX_Flag"])
+        subset = subset.dropna(subset=["Snapshot_Year"])
+        if not subset.empty:
+            pivot = subset.pivot_table(
+                index="Snapshot_Year",
+                columns="SOX_Flag",
+                values="Record_ID",
+                aggfunc="count",
+                fill_value=0,
+            )
+            if not pivot.empty:
+                save_stacked_bar(
+                    pivot,
+                    "SOX Scope Trend by Year",
+                    "Issue Count",
+                    outdir / "sox_scope_trend_by_year.png",
+                )
+
+
+def create_data_quality_appendix(df: pd.DataFrame, outdir: Path) -> None:
+    rows = []
+    total_rows = max(len(df), 1)
+
+    for col in df.columns:
+        missing = int(df[col].isna().sum())
+        rows.append(
+            {
+                "Column": col,
+                "Missing Count": missing,
+                "Missing %": round((missing / total_rows) * 100, 2),
+                "Distinct Values": int(df[col].nunique(dropna=True)),
+            }
+        )
+
+    dq = pd.DataFrame(rows).sort_values(["Missing %", "Missing Count"], ascending=False)
+    dq.to_excel(outdir / "data_quality_profile.xlsx", index=False)
 
     save_table_image(
-        table_df,
-        "SOX Certificate Issues, YoY",
-        outdir / "05_sox_certificate_issues_yoy_summary.png",
-        highlight_max=False,
+        dq.head(20),
+        "Top 20 Columns by Missingness",
+        outdir / "top_20_columns_by_missingness.png",
+    )
+
+    missing_series = dq.set_index("Column")["Missing %"].head(15)
+    save_barh(
+        missing_series,
+        "Top Missing Columns",
+        "Missing %",
+        outdir / "top_missing_columns_bar.png",
+        max_items=15,
     )
 
 
-def chart_sox_yoy_all_sectors(df: pd.DataFrame, outdir: Path) -> None:
-    chart_name = "SOX YoY All Sectors"
-    require_columns(
-        df,
-        ["SOX_Certificate_Issue_Flag", "Snapshot_Year", "Rating", "Record_ID"],
-        chart_name,
-    )
+# -----------------------------
+# Workbook summary
+# -----------------------------
+def write_master_workbook(
+    df: pd.DataFrame,
+    summary_df: pd.DataFrame,
+    base_dir: Path,
+) -> None:
+    workbook_path = base_dir / "ISRM_Professional_Report_Pack.xlsx"
 
-    sox = df[df["SOX_Certificate_Issue_Flag"].astype(str).str.upper() == "YES"].copy()
-    if sox.empty:
-        raise ValueError(f"{chart_name} found no rows with SOX_Certificate_Issue_Flag = YES.")
+    sheets = {
+        "executive_summary": summary_df,
+    }
 
-    sox["Rating"] = sox["Rating"].fillna("Unknown")
-    sox = sox[sox["Snapshot_Year"].notna()].copy()
+    if "Issue_Finding_State" in df.columns:
+        sheets["status_counts"] = (
+            df["Issue_Finding_State"].fillna("Unknown").astype(str).value_counts().rename_axis("Status").reset_index(name="Issue Count")
+        )
 
-    if sox.empty:
-        raise ValueError(f"{chart_name} has no usable Snapshot_Year values.")
+    if "Rating" in df.columns:
+        sheets["rating_counts"] = (
+            df["Rating"].fillna("Unknown").astype(str).value_counts().rename_axis("Rating").reset_index(name="Issue Count")
+        )
 
-    summary = sox.pivot_table(
-        index="Snapshot_Year",
-        columns="Rating",
-        values="Record_ID",
-        aggfunc="count",
-        fill_value=0,
-    )
+    if "Global_Control_Reference" in df.columns:
+        sheets["control_counts"] = (
+            df["Global_Control_Reference"].fillna("Unknown").astype(str).value_counts().rename_axis("Global_Control_Reference").reset_index(name="Issue Count")
+        )
 
-    preferred_cols = [c for c in ["Critical", "Major", "Minor"] if c in summary.columns]
-    other_cols = [c for c in summary.columns if c not in preferred_cols]
-    summary = summary[preferred_cols + other_cols]
+    if "Manager_Issue" in df.columns:
+        sheets["owner_counts"] = (
+            df["Manager_Issue"].fillna("Unknown").astype(str).value_counts().rename_axis("Owner").reset_index(name="Issue Count")
+        )
 
-    if summary.empty:
-        raise ValueError(f"{chart_name} produced no data.")
+    if "Issue_Creation_Date" in df.columns:
+        created = pd.to_datetime(df["Issue_Creation_Date"], errors="coerce").dropna()
+        if not created.empty:
+            sheets["created_monthly"] = (
+                created.dt.to_period("M").value_counts().sort_index().rename_axis("Month").reset_index(name="Issue Count")
+            )
 
-    fig, ax = plt.subplots(figsize=(9, 5.5))
-    for col in summary.columns:
-        ax.plot(summary.index, summary[col], marker="o", linewidth=2, label=col)
+    if "Days_Old" in df.columns:
+        days_old = pd.to_numeric(df["Days_Old"], errors="coerce").dropna()
+        if not days_old.empty:
+            bins = [-np.inf, 30, 60, 90, 180, np.inf]
+            labels = ["0-30", "31-60", "61-90", "91-180", "181+"]
+            aging = pd.cut(days_old, bins=bins, labels=labels).value_counts().sort_index()
+            sheets["aging_buckets"] = aging.rename_axis("Aging Bucket").reset_index(name="Issue Count")
 
-    ax.set_title(
-        "SOX Certificate Issues, YoY – All Sectors",
-        fontsize=14,
-        fontweight="bold",
-        loc="left",
-    )
-    ax.set_xlabel("Year")
-    ax.set_ylabel("Issue Count")
-    ax.legend(title="Severity")
-    ax.set_xticks(summary.index.tolist())
-    ax.grid(True, axis="y", alpha=0.25)
-
-    plt.tight_layout()
-    fig.savefig(outdir / "06_sox_certificate_issues_yoy_all_sectors.png", dpi=220, bbox_inches="tight")
-    plt.close(fig)
+    with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+        for sheet_name, data in sheets.items():
+            data.to_excel(writer, sheet_name=sheet_name[:31], index=False)
 
 
+# -----------------------------
+# Main
+# -----------------------------
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate ISRM-style charts from a CSV or Excel dataset."
-    )
+    parser = argparse.ArgumentParser(description="Generate a professional ISRM report pack.")
     parser.add_argument(
         "dataset",
         nargs="?",
         default=None,
-        help="Optional path to the CSV or XLSX dataset. If omitted, the script auto-searches the current folder.",
+        help="Optional path to the dataset file.",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="generated_charts",
-        help="Directory where chart PNGs will be written.",
+        default="isrm_professional_report_pack",
+        help="Output folder for report pack.",
     )
     args = parser.parse_args()
 
     dataset_path = auto_find_dataset(args.dataset)
-    outdir = Path(args.output_dir)
-    outdir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(args.output_dir)
+    report_dirs = ensure_dirs(output_dir)
 
-    df = load_dataset(dataset_path)
+    df_raw, sheet_used = load_dataset(dataset_path)
+    df = normalize_headers(df_raw)
+    df = apply_aliases(df)
 
-    print(f"Loaded dataset: {dataset_path}")
-    print(f"Rows: {len(df):,}")
-    print(f"Columns: {len(df.columns)}")
-    print()
-
-    charts: List[Tuple[str, Callable[[pd.DataFrame, Path], None]]] = [
-        ("Issues Summary by Type grouped by MRC", chart_issues_summary_by_type_grouped_by_mrc),
-        ("Repeat Findings by Owner and Control", chart_repeat_findings_by_owner_and_control),
-        ("Oversight Error by Owner and Control", chart_oversight_error_by_owner_and_control),
-        ("Total Issues by Control Reference", chart_total_issues_by_control_reference),
-        ("SOX YoY Summary", chart_sox_yoy_summary),
-        ("SOX YoY All Sectors", chart_sox_yoy_all_sectors),
-    ]
-
-    for chart_name, chart_func in charts:
-        try:
-            chart_func(df, outdir)
-            print(f"[OK] {chart_name}")
-        except Exception as e:
-            print(f"[SKIPPED] {chart_name}: {e}")
-
-    print()
-    print(f"Charts written to: {outdir.resolve()}")
-
-
-if __name__ == "__main__":
-    main()
+    summary_df = create_executive_summary(df, report_dirs["01_executive_summary"])
+    create_issue_volume_trends(df, report_dirs["02_issue_volume_trends"])
+    create
