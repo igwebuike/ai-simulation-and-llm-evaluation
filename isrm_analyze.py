@@ -123,6 +123,10 @@ def classify_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
             datetime_cols.append(col)
             continue
 
+        if pd.api.types.is_bool_dtype(series):
+            flag_like_cols.append(col)
+            continue
+
         if pd.api.types.is_numeric_dtype(series):
             numeric_cols.append(col)
             continue
@@ -153,6 +157,8 @@ def classify_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
 
 
 def safe_numeric_series(series: pd.Series) -> pd.Series:
+    if pd.api.types.is_bool_dtype(series):
+        return pd.Series(dtype="float64")
     return pd.to_numeric(series, errors="coerce").dropna()
 
 
@@ -182,7 +188,9 @@ def build_column_profile(df: pd.DataFrame) -> pd.DataFrame:
             "median": "",
         }
 
-        if pd.api.types.is_numeric_dtype(series):
+        if pd.api.types.is_bool_dtype(series):
+            pass
+        elif pd.api.types.is_numeric_dtype(series):
             numeric = safe_numeric_series(series)
             if not numeric.empty:
                 row["min"] = numeric.min()
@@ -232,7 +240,19 @@ def build_flag_profile(df: pd.DataFrame, flag_cols: List[str]) -> pd.DataFrame:
     records = []
 
     for col in flag_cols:
-        counts = df[col].fillna("<<MISSING>>").astype(str).str.strip().str.lower().value_counts()
+        series = df[col]
+
+        if pd.api.types.is_bool_dtype(series):
+            counts = series.fillna(False).astype(str).str.lower().value_counts(dropna=False)
+        else:
+            counts = (
+                series.fillna("<<MISSING>>")
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .value_counts(dropna=False)
+            )
+
         for value, count in counts.items():
             records.append({"column": col, "value": value, "count": int(count)})
 
@@ -243,7 +263,12 @@ def build_numeric_profile(df: pd.DataFrame, numeric_cols: List[str]) -> pd.DataF
     records = []
 
     for col in numeric_cols:
-        numeric = safe_numeric_series(df[col])
+        series = df[col]
+
+        if pd.api.types.is_bool_dtype(series):
+            continue
+
+        numeric = safe_numeric_series(series)
 
         if numeric.empty:
             records.append(
@@ -412,7 +437,12 @@ def chart_top_categoricals(df: pd.DataFrame, cat_cols: List[str], outdir: Path) 
 
 def chart_top_flags(df: pd.DataFrame, flag_cols: List[str], outdir: Path) -> None:
     for col in flag_cols[:8]:
-        counts = df[col].fillna("<<MISSING>>").astype(str).str.strip().str.lower().value_counts()
+        series = df[col]
+        if pd.api.types.is_bool_dtype(series):
+            counts = series.astype(str).str.lower().value_counts(dropna=False)
+        else:
+            counts = series.fillna("<<MISSING>>").astype(str).str.strip().str.lower().value_counts(dropna=False)
+
         if counts.empty:
             continue
 
@@ -431,6 +461,9 @@ def chart_top_flags(df: pd.DataFrame, flag_cols: List[str], outdir: Path) -> Non
 def chart_numeric_histograms(df: pd.DataFrame, numeric_cols: List[str], outdir: Path) -> None:
     plotted = 0
     for col in numeric_cols:
+        if pd.api.types.is_bool_dtype(df[col]):
+            continue
+
         s = safe_numeric_series(df[col])
         if len(s) < 5:
             continue
