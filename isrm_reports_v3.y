@@ -1,4 +1,6 @@
 import argparse
+import math
+import textwrap
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 
@@ -16,20 +18,23 @@ plt.rcParams["axes.labelsize"] = 10
 plt.rcParams["legend.fontsize"] = 9
 plt.rcParams["xtick.labelsize"] = 9
 plt.rcParams["ytick.labelsize"] = 9
+plt.rcParams["font.family"] = "DejaVu Sans"
 
 # J&J / business style-ish palette aligned to screenshots
 RED = "#c00000"
 CRITICAL_RED = "#d62728"
 MAJOR_ORANGE = "#f4b400"
 MINOR_YELLOW = "#fff200"
-BLUE = "#4e79a7"
-LIGHT_RED = "#f4cccc"
-LIGHT_BLUE = "#d9eaf7"
+BLUE_2025 = "#4e79a7"
+BLUE_2026 = "#1f4e79"
 GREY = "#808080"
 DARK = "#333333"
+LIGHT_ROW = "#fff2f2"
+WHITE = "#ffffff"
 
 PREFERRED_SHEETS = ["RAW", "Raw", "raw", "Sheet1"]
 TARGET_YEARS = [2025, 2026]
+MISSING = "Missing / Not Provided"
 
 COLUMN_ALIASES = {
     "issue_id": ["IssueId", "Issue_ID", "Issue ID", "ID", "Record_ID"],
@@ -38,7 +43,7 @@ COLUMN_ALIASES = {
     "create_date": ["Create_Date"],
     "issue_creation_date": ["Issue_Creation_Date"],
     "expected_due_date": ["Expected_Due_Date", "Due_Date_Sld"],
-    "revised_due_date": ["Revised_Due_Date", "Revised_Remediation_Date"],
+    "revised_due_date": ["Revised_Due_Date", "Revised_Remediation_Date", "Initial_Agreed_Remediation_Date"],
     "issue_closed_date": ["Issue_Closed_Date"],
     "days_old": ["Days_Old"],
     "days_until_due": ["Days_Until_Due"],
@@ -47,13 +52,20 @@ COLUMN_ALIASES = {
     "entity_sector": ["Entity_Sector", "Impacted_Sector", "IT_Asset_Accountable_Sector"],
     "area": ["Area", "Control_Category", "Risk_Category"],
     "repeat_finding": ["Repeat_Finding", "Repeat Finding"],
-    "remediation_status": ["Remediation Status", "Recommendation_State", "Issue_Status_SOX_Short", "Issue_Status_Sld"],
-    "issue_status_short": ["Issue_Status_SOX_Short", "Issue_Status_Sld"],
+    "remediation_status": ["Remediation Status", "Recommendation_State", "Issue_Status_SOX_Short", "Issue_Status_Sld", "Issue_Status"],
+    "issue_status_short": ["Issue_Status_SOX_Short", "Issue_Status_Sld", "Issue_Status"],
     "issue_status_cert": ["Issue_Status_SOX_Cert"],
     "overdue_flag": ["Overdue_Flag", "Open_And_Overdue_Flag", "Flag_3_Open_and_Overdue"],
     "common_insights": ["Common_Insights"],
     "root_cause": ["Root_Cause_Description", "Root_Cause_Insights"],
-    "control_owner": ["Business_Contact_Issue", "Accountable_Contact_Issue", "Manager_Issue", "MRC_Company_Contact"],
+    # Business_Contact_Recommendations is intentionally first because user said it is the true control owner alert field
+    "control_owner": [
+        "Business_Contact_Recommendations",
+        "Business_Contact_Issue",
+        "Accountable_Contact_Issue",
+        "Manager_Issue",
+        "MRC_Company_Contact",
+    ],
     "finding_title": ["Issue_Finding_Title", "Summary_Finding_Exec_Summary"],
     "finding": ["Finding", "Summary_Finding_Exec_Summary"],
     "final_month_snapshot": ["Final_Month_Snapshot"],
@@ -146,7 +158,7 @@ def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def normalize_text(s: pd.Series, fill: str = "Missing / Not Provided") -> pd.Series:
+def normalize_text(s: pd.Series, fill: str = MISSING) -> pd.Series:
     return (
         s.fillna(fill)
         .astype(str)
@@ -177,11 +189,6 @@ def standardize_rating(s: pd.Series) -> pd.Series:
     return lowered.map(mapping).fillna(s)
 
 
-def rating_order(items: List[str]) -> List[str]:
-    pref = ["Critical", "Major", "Minor", "Missing / Not Provided"]
-    return [x for x in pref if x in items] + [x for x in items if x not in pref]
-
-
 def rating_colors(columns: List[str]) -> List[str]:
     cmap = {"Critical": CRITICAL_RED, "Major": MAJOR_ORANGE, "Minor": MINOR_YELLOW}
     return [cmap.get(c, GREY) for c in columns]
@@ -210,7 +217,9 @@ def filter_target_years(df: pd.DataFrame, years: List[int]) -> pd.DataFrame:
     out["report_year"] = infer_year(out)
     out = out[out["report_year"].isin(years)].copy()
     out["report_month_date"] = infer_month_date(out)
-    out["rating_std"] = standardize_rating(out["rating"]) if "rating" in out.columns else "Missing / Not Provided"
+    out["rating_std"] = standardize_rating(out["rating"]) if "rating" in out.columns else MISSING
+    if "control_owner" in out.columns:
+        out["control_owner"] = normalize_text(out["control_owner"])
     return out
 
 
@@ -218,63 +227,143 @@ def ensure_dir(path: Path):
     path.mkdir(parents=True, exist_ok=True)
 
 
+def wrap_label(text: str, width: int = 24) -> str:
+    txt = str(text)
+    return "\n".join(textwrap.wrap(txt, width=width, break_long_words=False, break_on_hyphens=False)) if len(txt) > width else txt
+
+
+def shorten_cell(text: str, width: int = 44) -> str:
+    txt = " ".join(str(text).split())
+    if txt in {"", "nan", "NaN", "None"}:
+        return ""
+    return "\n".join(textwrap.wrap(txt, width=width, break_long_words=False, break_on_hyphens=False))
+
+
 def style_axes(ax, title: str, subtitle: Optional[str] = None, xlabel: str = "", ylabel: str = ""):
-    ax.set_title(title, loc="left", color=RED, pad=12)
+    wrapped_title = wrap_label(title, 55)
+    ax.set_title(wrapped_title, loc="left", color=RED, pad=14)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    ax.grid(axis="x" if ylabel else "y", alpha=0.22)
+    ax.grid(axis="x" if ylabel == "" else "y", alpha=0.22)
     for spine in ["top", "right"]:
         ax.spines[spine].set_visible(False)
     if subtitle:
-        ax.text(0.0, 1.02, subtitle, transform=ax.transAxes, ha="left", va="bottom", fontsize=9, color=DARK)
+        ax.text(0.0, 1.01, subtitle, transform=ax.transAxes, ha="left", va="bottom", fontsize=9, color=DARK)
+
+
+def finalize_figure(fig, top: float = 0.88):
+    fig.subplots_adjust(top=top, left=0.12, right=0.88, bottom=0.12)
 
 
 def save_kpi_table(kpis: List[Tuple[str, str]], path: Path, title: str):
     df = pd.DataFrame(kpis, columns=["Metric", "Value"])
-    fig, ax = plt.subplots(figsize=(7.8, max(2.8, 0.55 * len(df) + 1.2)))
+    fig, ax = plt.subplots(figsize=(8.3, max(3.2, 0.58 * len(df) + 1.4)))
     ax.axis("off")
-    ax.set_title(title, fontsize=14, fontweight="bold", loc="left", color=RED, pad=12)
+    ax.set_title(wrap_label(title, 48), fontsize=14, fontweight="bold", loc="left", color=RED, pad=12)
 
     table = ax.table(cellText=df.values, colLabels=df.columns, cellLoc="left", colLoc="left", loc="upper left")
     table.auto_set_font_size(False)
     table.set_fontsize(10)
-    table.scale(1, 1.5)
+    table.scale(1, 1.6)
 
+    col_widths = {0: 0.74, 1: 0.18}
     for (row, col), cell in table.get_celld().items():
+        cell.set_linewidth(0.6)
+        if col in col_widths:
+            cell.set_width(col_widths[col])
         if row == 0:
             cell.set_facecolor(RED)
             cell.set_text_props(color="white", weight="bold")
+            cell.set_height(0.08)
         else:
             cell.set_facecolor("#f9f9f9" if row % 2 else "white")
+            cell.set_height(0.075)
     plt.tight_layout()
     fig.savefig(path, bbox_inches="tight")
     plt.close(fig)
 
 
-def save_detail_table(df: pd.DataFrame, path: Path, title: str, col_width_scale: float = 1.0):
+def save_detail_table_pages(
+    df: pd.DataFrame,
+    outdir: Path,
+    base_filename: str,
+    title: str,
+    rows_per_page: int = 14,
+    font_size: int = 8,
+    row_height: float = 0.072,
+    wrap_widths: Optional[Dict[str, int]] = None,
+):
     if df.empty:
-        return
+        return []
+
     display = df.copy().fillna("")
-    fig_w = min(24, max(12, display.shape[1] * 2.3 * col_width_scale))
-    fig_h = min(18, max(4, display.shape[0] * 0.55 + 1.5))
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-    ax.axis("off")
-    ax.set_title(title, fontsize=14, fontweight="bold", loc="left", color=RED, pad=12)
+    wrap_widths = wrap_widths or {}
+    for col in display.columns:
+        width = wrap_widths.get(col, 30)
+        display[col] = display[col].map(lambda x: shorten_cell(x, width))
 
-    table = ax.table(cellText=display.values, colLabels=display.columns, cellLoc="left", colLoc="left", loc="upper left")
-    table.auto_set_font_size(False)
-    table.set_fontsize(8)
-    table.scale(1, 1.45)
+    # practical width allocation for business-facing detail tables
+    col_width_map = {
+        "Year": 0.05,
+        "Finding Summary": 0.16,
+        "System & Control": 0.10,
+        "System & Control / Area": 0.11,
+        "Sector Responsible": 0.11,
+        "Control Owner": 0.11,
+        "Finding Root Cause": 0.17,
+        "Release Date": 0.08,
+        "Action Plan Remediation Date": 0.10,
+        "Remediation Date": 0.09,
+        "Actual Status": 0.09,
+        "Status": 0.08,
+        "SOX Type": 0.07,
+    }
 
-    for (row, col), cell in table.get_celld().items():
-        if row == 0:
-            cell.set_facecolor(RED)
-            cell.set_text_props(color="white", weight="bold")
-        else:
-            cell.set_facecolor("#fff2f2" if row % 2 else "white")
-    plt.tight_layout()
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
+    pages = []
+    total_pages = math.ceil(len(display) / rows_per_page)
+    for page_idx in range(total_pages):
+        start = page_idx * rows_per_page
+        end = start + rows_per_page
+        part = display.iloc[start:end].copy()
+
+        fig_h = max(6.3, len(part) * 0.55 + 1.8)
+        fig, ax = plt.subplots(figsize=(19, fig_h))
+        ax.axis("off")
+        page_title = f"{title} (Page {page_idx + 1} of {total_pages})" if total_pages > 1 else title
+        ax.set_title(wrap_label(page_title, 65), fontsize=14, fontweight="bold", loc="left", color=RED, pad=12)
+
+        table = ax.table(
+            cellText=part.values,
+            colLabels=part.columns,
+            cellLoc="left",
+            colLoc="left",
+            loc="upper left",
+        )
+        table.auto_set_font_size(False)
+        table.set_fontsize(font_size)
+        table.scale(1, 1.18)
+
+        for (row, col), cell in table.get_celld().items():
+            header = row == 0
+            cell.set_linewidth(0.75)
+            col_name = part.columns[col]
+            cell.set_width(col_width_map.get(col_name, 0.09))
+            if header:
+                cell.set_facecolor(RED)
+                cell.set_text_props(color="white", weight="bold", va="center")
+                cell.set_height(row_height + 0.01)
+            else:
+                cell.set_facecolor(LIGHT_ROW if row % 2 else WHITE)
+                cell.set_text_props(color=DARK, va="top")
+                cell.set_height(row_height)
+
+        plt.tight_layout()
+        file_path = outdir / f"{base_filename}_page_{page_idx + 1}.png"
+        fig.savefig(file_path, bbox_inches="tight")
+        plt.close(fig)
+        pages.append(file_path)
+
+    return pages
 
 
 def chart_metrics_summary(df: pd.DataFrame, outdir: Path):
@@ -282,7 +371,7 @@ def chart_metrics_summary(df: pd.DataFrame, outdir: Path):
     for year in TARGET_YEARS:
         d = df[df["report_year"] == year].copy()
         total_repeat = int((normalize_yes_no(d["repeat_finding"]) == "yes").sum()) if "repeat_finding" in d.columns else 0
-        critical_sox = int(((d["rating_std"] == "Critical")).sum())
+        critical_sox = int((d["rating_std"] == "Critical").sum())
         critical_non_sox = 0
         if "sox_type" in d.columns:
             sox_type = normalize_text(d["sox_type"]).str.lower()
@@ -294,7 +383,7 @@ def chart_metrics_summary(df: pd.DataFrame, outdir: Path):
             (f"{year} Current Critical Non-SOX Findings", f"{critical_non_sox:,}"),
             (f"{year} Current Overdue Findings", f"{overdue:,}"),
         ])
-    save_kpi_table(rows, outdir / "01_metrics_summary_2025_2026.png", "Metrics – Current Open SOX/Audit Findings (2025 and 2026)")
+    save_kpi_table(rows, outdir / "01_metrics_summary_2025_2026.png", "Metrics – Current Open SOX / Audit Findings (2025 and 2026)")
 
 
 def chart_open_findings_by_sector(df: pd.DataFrame, outdir: Path):
@@ -302,37 +391,43 @@ def chart_open_findings_by_sector(df: pd.DataFrame, outdir: Path):
         return
     temp = df.copy()
     temp["entity_sector"] = normalize_text(temp["entity_sector"])
+    temp["entity_sector_label"] = temp["entity_sector"].map(lambda x: wrap_label(x, 24))
     temp["sox_type_std"] = normalize_text(temp["sox_type"]) if "sox_type" in temp.columns else "Unspecified"
 
     for year in TARGET_YEARS:
         d = temp[temp["report_year"] == year].copy()
         if d.empty:
             continue
-        pivot = d.pivot_table(index="entity_sector", columns="rating_std", values="issue_id", aggfunc="count", fill_value=0)
+        pivot = d.pivot_table(index="entity_sector_label", columns="rating_std", values="issue_id", aggfunc="count", fill_value=0)
         ordered_cols = [c for c in ["Critical", "Major", "Minor"] if c in pivot.columns] + [c for c in pivot.columns if c not in ["Critical", "Major", "Minor"]]
         pivot = pivot[ordered_cols]
         pivot["Total"] = pivot.sum(axis=1)
         pivot = pivot.sort_values("Total", ascending=True).drop(columns=["Total"])
 
-        fig, ax = plt.subplots(figsize=(11, max(5, 0.5 * len(pivot) + 2)))
+        fig, ax = plt.subplots(figsize=(13.5, max(6.5, 0.62 * len(pivot) + 2.7)))
         left = np.zeros(len(pivot))
         y = np.arange(len(pivot))
-        for col, color in zip(pivot.columns, rating_colors(list(pivot.columns))):
+        cols = list(pivot.columns)
+        for col, color in zip(cols, rating_colors(cols)):
             vals = pivot[col].values
             bars = ax.barh(y, vals, left=left, label=col, color=color)
             for bar, v, l in zip(bars, vals, left):
                 if v > 0:
-                    ax.text(l + v / 2, bar.get_y() + bar.get_height() / 2, f"{int(v)}", ha="center", va="center", fontsize=8)
+                    ax.text(l + v / 2, bar.get_y() + bar.get_height() / 2, f"{int(v)}", ha="center", va="center", fontsize=9)
             left += vals
         ax.set_yticks(y)
         ax.set_yticklabels(pivot.index)
-        style_axes(ax, f"{year} YTD IT SOX Open Findings by Sector", subtitle=f"Explicit year shown for business reporting | Ratings displayed by severity", xlabel="Open Finding Count")
+        style_axes(
+            ax,
+            f"{year} YTD IT SOX Open Findings by Sector",
+            subtitle=f"Reporting year explicitly shown: {year} | Professional severity view",
+            xlabel="Open Finding Count",
+        )
         ax.legend(title="Severity", bbox_to_anchor=(1.02, 1), loc="upper left")
-        plt.tight_layout()
+        finalize_figure(fig, top=0.84)
         fig.savefig(outdir / f"02_open_findings_by_sector_{year}.png", bbox_inches="tight")
         plt.close(fig)
 
-        # matching summary table by SOX type per sector
         if "sox_type" in d.columns:
             tbl = d.pivot_table(index="entity_sector", columns="sox_type_std", values="issue_id", aggfunc="count", fill_value=0)
             tbl["Grand Total"] = tbl.sum(axis=1)
@@ -340,7 +435,16 @@ def chart_open_findings_by_sector(df: pd.DataFrame, outdir: Path):
             grand.index = ["Grand Total"]
             tbl = pd.concat([tbl, grand], axis=0)
             tbl = tbl.reset_index().rename(columns={"entity_sector": "Sector"})
-            save_detail_table(tbl, outdir / f"03_open_findings_sector_type_table_{year}.png", f"{year} YTD IT SOX Open Findings by Sector – Type Breakdown")
+            save_detail_table_pages(
+                tbl,
+                outdir,
+                f"03_open_findings_sector_type_table_{year}",
+                f"{year} YTD IT SOX Open Findings by Sector – Type Breakdown",
+                rows_per_page=18,
+                font_size=9,
+                row_height=0.065,
+                wrap_widths={"Sector": 22},
+            )
 
 
 def chart_risk_area_and_quarterly_trends(df: pd.DataFrame, outdir: Path):
@@ -348,6 +452,7 @@ def chart_risk_area_and_quarterly_trends(df: pd.DataFrame, outdir: Path):
         return
     temp = df.copy()
     temp["area"] = normalize_text(temp["area"])
+    temp["area_label"] = temp["area"].map(lambda x: wrap_label(x, 26))
     temp["quarter"] = temp["report_month_date"].dt.to_period("Q").astype(str)
     temp = temp[temp["quarter"].str.startswith(("2025", "2026"))]
 
@@ -356,12 +461,12 @@ def chart_risk_area_and_quarterly_trends(df: pd.DataFrame, outdir: Path):
         if d.empty:
             continue
 
-        risk = d.pivot_table(index="area", columns="rating_std", values="issue_id", aggfunc="count", fill_value=0)
+        risk = d.pivot_table(index="area_label", columns="rating_std", values="issue_id", aggfunc="count", fill_value=0)
         risk = risk[[c for c in ["Critical", "Major", "Minor"] if c in risk.columns]]
         risk["Total"] = risk.sum(axis=1)
         risk = risk.sort_values("Total", ascending=True).tail(10).drop(columns=["Total"])
 
-        fig, ax = plt.subplots(figsize=(12, max(5, 0.5 * len(risk) + 2)))
+        fig, ax = plt.subplots(figsize=(14, max(6.5, 0.62 * len(risk) + 2.6)))
         left = np.zeros(len(risk))
         y = np.arange(len(risk))
         cols = list(risk.columns)
@@ -370,31 +475,41 @@ def chart_risk_area_and_quarterly_trends(df: pd.DataFrame, outdir: Path):
             bars = ax.barh(y, vals, left=left, label=col, color=color)
             for bar, v, l in zip(bars, vals, left):
                 if v > 0:
-                    ax.text(l + v / 2, bar.get_y() + bar.get_height() / 2, f"{int(v)}", ha="center", va="center", fontsize=8)
+                    ax.text(l + v / 2, bar.get_y() + bar.get_height() / 2, f"{int(v)}", ha="center", va="center", fontsize=9)
             left += vals
         ax.set_yticks(y)
         ax.set_yticklabels(risk.index)
-        style_axes(ax, f"{year} YTD IT SOX Open Findings Risk Area & Trends", subtitle=f"Top risk areas for {year} | Year explicitly shown", xlabel="Finding Count")
+        style_axes(
+            ax,
+            f"{year} YTD IT SOX Open Findings Risk Area & Trends",
+            subtitle=f"Top risk areas for {year} | Year explicitly shown on chart",
+            xlabel="Finding Count",
+        )
         ax.legend(title="Severity", bbox_to_anchor=(1.02, 1), loc="upper left")
-        plt.tight_layout()
+        finalize_figure(fig, top=0.84)
         fig.savefig(outdir / f"04_risk_area_by_severity_{year}.png", bbox_inches="tight")
         plt.close(fig)
 
-    # combined quarterly trend with explicit 2025 and 2026 in labels
     quarter_pivot = temp.pivot_table(index="quarter", columns="rating_std", values="issue_id", aggfunc="count", fill_value=0)
     if not quarter_pivot.empty:
         ordered_index = sorted(quarter_pivot.index.tolist())
         quarter_pivot = quarter_pivot.loc[ordered_index]
         cols = [c for c in ["Critical", "Major", "Minor"] if c in quarter_pivot.columns]
-        fig, ax = plt.subplots(figsize=(12, 5.5))
+        fig, ax = plt.subplots(figsize=(12.8, 6.0))
         for col, color in zip(cols, rating_colors(cols)):
             ax.plot(quarter_pivot.index, quarter_pivot[col], marker="o", linewidth=2.4, label=col, color=color)
             for x, y in zip(quarter_pivot.index, quarter_pivot[col]):
                 ax.text(x, y + 0.2, f"{int(y)}", ha="center", va="bottom", fontsize=8)
-        style_axes(ax, "Quarterly Trend of Open Findings (2025–2026)", subtitle="Quarter labels explicitly show 2025 and 2026", xlabel="Quarter", ylabel="Open Finding Count")
+        style_axes(
+            ax,
+            "Quarterly Trend of Open Findings (2025–2026)",
+            subtitle="Quarter labels explicitly show both 2025 and 2026",
+            xlabel="Quarter",
+            ylabel="Open Finding Count",
+        )
         ax.legend(title="Severity")
         ax.tick_params(axis="x", rotation=0)
-        plt.tight_layout()
+        finalize_figure(fig, top=0.84)
         fig.savefig(outdir / "05_quarterly_trend_2025_2026.png", bbox_inches="tight")
         plt.close(fig)
 
@@ -418,20 +533,27 @@ def chart_issue_aging(df: pd.DataFrame, outdir: Path):
     if not years_present:
         return
 
-    fig, ax = plt.subplots(figsize=(10.5, 5.5))
+    fig, ax = plt.subplots(figsize=(11.5, 5.8))
     x = np.arange(len(pivot.index))
-    width = 0.35
+    width = 0.34
+    year_colors = {2025: BLUE_2025, 2026: RED}
     for i, year in enumerate(years_present):
-        offset = (i - (len(years_present)-1)/2) * width
-        bars = ax.bar(x + offset, pivot[year].values, width=width, label=str(year), color=BLUE if year == 2025 else RED)
+        offset = (i - (len(years_present) - 1) / 2) * width
+        bars = ax.bar(x + offset, pivot[year].values, width=width, label=str(year), color=year_colors.get(year, GREY))
         for bar, val in zip(bars, pivot[year].values):
             if val > 0:
-                ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.15, f"{int(val)}", ha="center", va="bottom", fontsize=8)
+                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.15, f"{int(val)}", ha="center", va="bottom", fontsize=8)
     ax.set_xticks(x)
     ax.set_xticklabels(pivot.index.astype(str))
-    style_axes(ax, "Issue Aging Distribution (2025 vs 2026)", subtitle="Age buckets compare open findings across both years", xlabel="Age Bucket", ylabel="Finding Count")
+    style_axes(
+        ax,
+        "Issue Aging Distribution (2025 vs 2026)",
+        subtitle="Age buckets compare open findings across both years",
+        xlabel="Age Bucket",
+        ylabel="Finding Count",
+    )
     ax.legend(title="Year")
-    plt.tight_layout()
+    finalize_figure(fig, top=0.84)
     fig.savefig(outdir / "06_issue_aging_2025_2026.png", bbox_inches="tight")
     plt.close(fig)
 
@@ -462,8 +584,27 @@ def detail_critical_findings(df: pd.DataFrame, outdir: Path):
         tbl["Release Date"] = pd.to_datetime(tbl["Release Date"], errors="coerce").dt.strftime("%m/%d/%Y")
     if "Action Plan Remediation Date" in tbl.columns:
         tbl["Action Plan Remediation Date"] = pd.to_datetime(tbl["Action Plan Remediation Date"], errors="coerce").dt.strftime("%m/%d/%Y")
-    tbl = tbl.sort_values([c for c in ["Year", "Release Date"] if c in tbl.columns], ascending=[True, True]).head(25)
-    save_detail_table(tbl, outdir / "07_critical_findings_detail_2025_2026.png", "Critical IT SOX Findings – Includes Release Date Column")
+    if "Control Owner" in tbl.columns:
+        tbl["Control Owner"] = tbl["Control Owner"].replace(MISSING, "")
+    sort_cols = [c for c in ["Year", "Release Date"] if c in tbl.columns]
+    tbl = tbl.sort_values(sort_cols, ascending=True)
+    save_detail_table_pages(
+        tbl,
+        outdir,
+        "07_critical_findings_detail_2025_2026",
+        "Critical IT SOX Findings – Includes Release Date and Control Owner",
+        rows_per_page=12,
+        font_size=8,
+        row_height=0.09,
+        wrap_widths={
+            "Finding Summary": 34,
+            "System & Control / Area": 20,
+            "Sector Responsible": 18,
+            "Control Owner": 18,
+            "Finding Root Cause": 34,
+            "Status": 16,
+        },
+    )
 
 
 def detail_repeat_findings(df: pd.DataFrame, outdir: Path):
@@ -493,8 +634,30 @@ def detail_repeat_findings(df: pd.DataFrame, outdir: Path):
     tbl = d[cols].copy().rename(columns=rename)
     if "Remediation Date" in tbl.columns:
         tbl["Remediation Date"] = pd.to_datetime(tbl["Remediation Date"], errors="coerce").dt.strftime("%m/%d/%Y")
-    tbl = tbl.sort_values([c for c in ["Year", "Remediation Date"] if c in tbl.columns], ascending=[True, True]).head(35)
-    save_detail_table(tbl, outdir / "08_repeat_findings_detail_2025_2026.png", "Current Repeat IT SOX Findings – Updated with Actual Status")
+    if "Actual Status" in tbl.columns:
+        tbl["Actual Status"] = tbl["Actual Status"].replace(MISSING, "")
+    if "Control Owner" in tbl.columns:
+        tbl["Control Owner"] = tbl["Control Owner"].replace(MISSING, "")
+    sort_cols = [c for c in ["Year", "Remediation Date"] if c in tbl.columns]
+    tbl = tbl.sort_values(sort_cols, ascending=True)
+    save_detail_table_pages(
+        tbl,
+        outdir,
+        "08_repeat_findings_detail_2025_2026",
+        "Current Repeat IT SOX Findings – Control Owner and Actual Status Included",
+        rows_per_page=12,
+        font_size=8,
+        row_height=0.09,
+        wrap_widths={
+            "Finding Summary": 34,
+            "System & Control": 20,
+            "Sector Responsible": 18,
+            "Control Owner": 18,
+            "Finding Root Cause": 34,
+            "Actual Status": 16,
+            "SOX Type": 12,
+        },
+    )
 
 
 def create_run_log(df: pd.DataFrame, outdir: Path, dataset_path: Path, sheet_name: str):
@@ -507,15 +670,11 @@ def create_run_log(df: pd.DataFrame, outdir: Path, dataset_path: Path, sheet_nam
         f"Target years: {TARGET_YEARS}",
         f"Rows by year: {years}",
         "",
-        "Generated outputs:",
-        "01_metrics_summary_2025_2026.png",
-        "02_open_findings_by_sector_2025.png / 2026.png",
-        "03_open_findings_sector_type_table_2025.png / 2026.png",
-        "04_risk_area_by_severity_2025.png / 2026.png",
-        "05_quarterly_trend_2025_2026.png",
-        "06_issue_aging_2025_2026.png",
-        "07_critical_findings_detail_2025_2026.png",
-        "08_repeat_findings_detail_2025_2026.png",
+        "Key fixes in v2:",
+        "- Fixed chart title/header overlap by increasing top margin and wrapping long titles.",
+        "- Control Owner now prioritizes Business_Contact_Recommendations.",
+        "- Repeat and critical detail reports are paginated for readability.",
+        "- Table cells are wrapped and row heights expanded for professional output.",
     ]
     (outdir / "run_log.txt").write_text("\n".join(lines), encoding="utf-8")
 
@@ -523,7 +682,7 @@ def create_run_log(df: pd.DataFrame, outdir: Path, dataset_path: Path, sheet_nam
 def main():
     parser = argparse.ArgumentParser(description="Generate professional ISRM graphs aligned to the PowerPoint style for 2025 and 2026.")
     parser.add_argument("dataset", nargs="?", default=None, help="Optional path to CSV/XLSX dataset")
-    parser.add_argument("--output-dir", default="isrm_ppt_graphs_2025_2026", help="Output directory")
+    parser.add_argument("--output-dir", default="isrm_ppt_graphs_2025_2026_v2", help="Output directory")
     args = parser.parse_args()
 
     dataset_path = auto_find_dataset(args.dataset)
@@ -531,11 +690,6 @@ def main():
     df = clean_headers(raw_df)
     df = apply_aliases(df)
     df = parse_dates(df)
-
-    required_for_best_output = ["rating", "entity_sector", "area"]
-    missing = [c for c in required_for_best_output if c not in df.columns]
-    if missing:
-        print(f"Warning: some business fields were not found and some outputs may be skipped: {missing}")
 
     filtered = filter_target_years(df, TARGET_YEARS)
     outdir = Path(args.output_dir)
