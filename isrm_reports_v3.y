@@ -1,5 +1,6 @@
 import argparse
 import math
+import re
 import textwrap
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
@@ -8,71 +9,92 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-# Professional default styling
+
+# =========================
+# GLOBAL STYLE
+# =========================
 plt.rcParams["figure.dpi"] = 140
 plt.rcParams["savefig.dpi"] = 220
 plt.rcParams["font.size"] = 10
-plt.rcParams["axes.titlesize"] = 15
+plt.rcParams["axes.titlesize"] = 16
 plt.rcParams["axes.titleweight"] = "bold"
 plt.rcParams["axes.labelsize"] = 10
-plt.rcParams["legend.fontsize"] = 9
-plt.rcParams["xtick.labelsize"] = 9
-plt.rcParams["ytick.labelsize"] = 9
 plt.rcParams["font.family"] = "DejaVu Sans"
 
-# J&J / business style-ish palette aligned to screenshots
-RED = "#c00000"
-CRITICAL_RED = "#d62728"
-MAJOR_ORANGE = "#f4b400"
-MINOR_YELLOW = "#fff200"
-BLUE_2025 = "#4e79a7"
-BLUE_2026 = "#1f4e79"
-GREY = "#808080"
-DARK = "#333333"
-LIGHT_ROW = "#fff2f2"
-WHITE = "#ffffff"
+COLOR_RED = "#C00000"
+COLOR_CRITICAL = "#D62728"
+COLOR_MAJOR = "#F4B400"
+COLOR_MINOR = "#FFF200"
+COLOR_HEADER_TEXT = "white"
+COLOR_GRID = "#D9D9D9"
+COLOR_ROW_A = "#F7F2F2"
+COLOR_ROW_B = "#FFFFFF"
+COLOR_BG = "#FFFFFF"
+MISSING_LABEL = "Missing / Not Provided"
 
+
+# =========================
+# CONFIG
+# =========================
 PREFERRED_SHEETS = ["RAW", "Raw", "raw", "Sheet1"]
-TARGET_YEARS = [2025, 2026]
-MISSING = "Missing / Not Provided"
 
 COLUMN_ALIASES = {
-    "issue_id": ["IssueId", "Issue_ID", "Issue ID", "ID", "Record_ID"],
-    "audit_year": ["Audit_Year"],
-    "release_date": ["Release_Date"],
-    "create_date": ["Create_Date"],
-    "issue_creation_date": ["Issue_Creation_Date"],
-    "expected_due_date": ["Expected_Due_Date", "Due_Date_Sld"],
-    "revised_due_date": ["Revised_Due_Date", "Revised_Remediation_Date", "Initial_Agreed_Remediation_Date"],
-    "issue_closed_date": ["Issue_Closed_Date"],
-    "days_old": ["Days_Old"],
-    "days_until_due": ["Days_Until_Due"],
-    "rating": ["Rating", "Severity", "Issue Rating", "Alert_1_Rating_Verbal"],
-    "sox_type": ["SOX_Type"],
-    "entity_sector": ["Entity_Sector", "Impacted_Sector", "IT_Asset_Accountable_Sector"],
-    "area": ["Area", "Control_Category", "Risk_Category"],
-    "repeat_finding": ["Repeat_Finding", "Repeat Finding"],
-    "remediation_status": ["Remediation Status", "Recommendation_State", "Issue_Status_SOX_Short", "Issue_Status_Sld", "Issue_Status"],
-    "issue_status_short": ["Issue_Status_SOX_Short", "Issue_Status_Sld", "Issue_Status"],
-    "issue_status_cert": ["Issue_Status_SOX_Cert"],
-    "overdue_flag": ["Overdue_Flag", "Open_And_Overdue_Flag", "Flag_3_Open_and_Overdue"],
-    "common_insights": ["Common_Insights"],
-    "root_cause": ["Root_Cause_Description", "Root_Cause_Insights"],
-    # Business_Contact_Recommendations is intentionally first because user said it is the true control owner alert field
-    "control_owner": [
-        "Business_Contact_Recommendations",
-        "Business_Contact_Issue",
-        "Accountable_Contact_Issue",
-        "Manager_Issue",
-        "MRC_Company_Contact",
+    "record_id": ["Record_ID", "ID", "Issue_ID", "IssueId"],
+    "finding_summary": [
+        "Finding Summary",
+        "Summary_Finding_Exec_Summary",
+        "Issue_Finding_Title",
+        "Finding",
     ],
-    "finding_title": ["Issue_Finding_Title", "Summary_Finding_Exec_Summary"],
-    "finding": ["Finding", "Summary_Finding_Exec_Summary"],
-    "final_month_snapshot": ["Final_Month_Snapshot"],
-    "issue_finding_source": ["Issue_Finding_Source"],
+    "root_cause": ["Root_Cause_Description", "Finding Root Cause", "Root Cause", "Root_Cause_Insights"],
+    "control_owner": ["Business_Contact_Recommendations", "Control Owner", "Business_Contact_Issue"],
+    "sector_responsible": [
+        "Sector Responsible",
+        "Impacted_Sector",
+        "Entity_Sector",
+        "IT_Asset_Accountable_Sector",
+    ],
+    "system_area": [
+        "System & Control / Area",
+        "System & Control",
+        "Area",
+        "Control_Category",
+        "Risk_Category",
+    ],
+    "release_date": ["Release_Date"],
+    "issue_creation_date": ["Issue_Creation_Date", "Create_Date"],
+    "issue_closed_date": ["Issue_Closed_Date"],
+    "remediation_date": [
+        "Initial_Agreed_Remediation_Date",
+        "Expected_Due_Date",
+        "Revised_Due_Date",
+        "Revised_Remediation_Date",
+        "Due_Date_Sld",
+    ],
+    "status": [
+        "Issue_Status_Sld",
+        "Issue_Status_SOX_Short",
+        "Issue_Status_SOX_Cert",
+        "Issue_Finding_State",
+        "Issue_Status",
+    ],
+    "actual_status": [
+        "Recommendation_State",
+        "RecommendationsStateSubaction",
+        "Issue_Finding_State_Subaction",
+        "Remediation Status",
+    ],
+    "sox_type": ["SOX_Type"],
+    "rating": ["Rating", "Severity", "Issue Rating", "Alert_1_Rating_Verbal"],
+    "repeat_finding": ["Repeat_Finding", "Repeat Finding", "Repeat_Finding_Flag"],
+    "year": ["Audit_Year", "Snapshot_Year", "Repeat_Year"],
+    "open_flag": ["Open_Issues_Sld_Flag", "Issue_Status_SOX_Short", "Issue_Status_Sld"],
 }
 
 
+# =========================
+# FILE / DATA LOAD
+# =========================
 def auto_find_dataset(explicit_path: Optional[str]) -> Path:
     if explicit_path:
         p = Path(explicit_path)
@@ -83,6 +105,8 @@ def auto_find_dataset(explicit_path: Optional[str]) -> Path:
     here = Path(__file__).resolve().parent
     preferred = [
         "ISRM Report (Primary Data Source).xlsx",
+        "ISRM Report (Primary Data Source).xlsm",
+        "ISRM Report (Primary Data Source).xls",
         "ISRM Report (Primary Data Source).csv",
     ]
     for name in preferred:
@@ -106,12 +130,18 @@ def choose_sheet(xls: pd.ExcelFile) -> str:
 
 
 def load_dataset(path: Path) -> Tuple[pd.DataFrame, str]:
-    if path.suffix.lower() == ".csv":
-        return pd.read_csv(path), "CSV"
-    if path.suffix.lower() in {".xlsx", ".xlsm", ".xls"}:
+    suffix = path.suffix.lower()
+
+    if suffix == ".csv":
+        df = pd.read_csv(path)
+        return df, "CSV"
+
+    if suffix in {".xlsx", ".xlsm", ".xls"}:
         xls = pd.ExcelFile(path)
         sheet = choose_sheet(xls)
-        return pd.read_excel(path, sheet_name=sheet), sheet
+        df = pd.read_excel(path, sheet_name=sheet)
+        return df, sheet
+
     raise ValueError(f"Unsupported file type: {path.suffix}")
 
 
@@ -120,8 +150,7 @@ def clean_headers(df: pd.DataFrame) -> pd.DataFrame:
     cleaned = []
     for c in df.columns:
         s = str(c).strip().replace("\n", " ").replace("\r", " ")
-        while "  " in s:
-            s = s.replace("  ", " ")
+        s = re.sub(r"\s+", " ", s)
         cleaned.append(s)
     df.columns = cleaned
     return df
@@ -141,574 +170,702 @@ def apply_aliases(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.rename(columns=rename_map)
 
-    if "issue_id" not in df.columns:
-        df["issue_id"] = range(1, len(df) + 1)
+    if "record_id" not in df.columns:
+        df["record_id"] = range(1, len(df) + 1)
 
     return df
 
 
 def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    for col in [
-        "audit_year", "release_date", "create_date", "issue_creation_date",
-        "expected_due_date", "revised_due_date", "issue_closed_date", "final_month_snapshot"
-    ]:
+
+    for col in ["release_date", "issue_creation_date", "issue_closed_date", "remediation_date", "year"]:
         if col in df.columns:
-            df[col] = pd.to_datetime(df[col], errors="coerce")
+            if col == "year":
+                parsed = pd.to_datetime(df[col], errors="coerce")
+                year_num = pd.to_numeric(df[col], errors="coerce")
+                df[col] = np.where(parsed.notna(), parsed.dt.year, year_num)
+            else:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
+
+    if "year" not in df.columns:
+        if "issue_creation_date" in df.columns:
+            df["year"] = df["issue_creation_date"].dt.year
+        elif "release_date" in df.columns:
+            df["year"] = df["release_date"].dt.year
+        elif "issue_closed_date" in df.columns:
+            df["year"] = df["issue_closed_date"].dt.year
+
     return df
 
 
-def normalize_text(s: pd.Series, fill: str = MISSING) -> pd.Series:
-    return (
-        s.fillna(fill)
-        .astype(str)
-        .str.strip()
-        .replace("", fill)
-        .replace("nan", fill)
-        .replace("NaN", fill)
-        .replace("<NA>", fill)
-    )
+# =========================
+# CLEAN / STANDARDIZE
+# =========================
+def clean_text(value, missing_label=MISSING_LABEL) -> str:
+    if pd.isna(value):
+        return missing_label
+    s = str(value).strip()
+    s = re.sub(r"\s+", " ", s)
+    if s == "" or s.lower() in {"nan", "none", "<na>"}:
+        return missing_label
+    return s
 
 
-def normalize_yes_no(s: pd.Series) -> pd.Series:
-    out = normalize_text(s).str.lower()
-    return out.replace({"true": "yes", "false": "no", "1": "yes", "0": "no", "y": "yes", "n": "no", "x": "yes"})
+def clean_series(series: pd.Series, missing_label=MISSING_LABEL) -> pd.Series:
+    return series.apply(lambda x: clean_text(x, missing_label))
 
 
-def standardize_rating(s: pd.Series) -> pd.Series:
-    s = normalize_text(s)
+def yes_no_normalize(series: pd.Series) -> pd.Series:
+    s = clean_series(series).str.lower()
     mapping = {
-        "critical": "Critical",
-        "major": "Major",
-        "minor": "Minor",
-        "medium": "Major",
-        "moderate": "Major",
-        "low": "Minor",
+        "yes": "yes",
+        "y": "yes",
+        "true": "yes",
+        "1": "yes",
+        "x": "yes",
+        "no": "no",
+        "n": "no",
+        "false": "no",
+        "0": "no",
     }
-    lowered = s.str.strip().str.lower()
-    return lowered.map(mapping).fillna(s)
+    return s.map(lambda x: mapping.get(x, x))
 
 
-def rating_colors(columns: List[str]) -> List[str]:
-    cmap = {"Critical": CRITICAL_RED, "Major": MAJOR_ORANGE, "Minor": MINOR_YELLOW}
-    return [cmap.get(c, GREY) for c in columns]
+def is_open_status(value: str) -> bool:
+    s = clean_text(value, "").lower()
+    return any(k in s for k in ["open", "in progress", "not started", "overdue", "pending"])
 
 
-def infer_year(df: pd.DataFrame) -> pd.Series:
-    for col in ["final_month_snapshot", "issue_creation_date", "release_date", "create_date", "audit_year"]:
+def wrap_text(value: str, width: int) -> str:
+    s = clean_text(value, "")
+    if not s:
+        return ""
+    return textwrap.fill(s, width=width, break_long_words=False, break_on_hyphens=False)
+
+
+def clean_finding_text(text: str) -> str:
+    s = clean_text(text, "")
+    if not s:
+        return ""
+
+    replacements = {
+        "Insufficient ": "Lack of ",
+        "Incomplete ": "Missing ",
+        "Inadequate ": "Weak ",
+        "Temporary Elevated Access Control Design": "Privileged Access Controls",
+        "Segregation of Duties": "SoD Controls",
+        "Risk Control Matrix": "RCM Definition",
+        "Network Segmentation": "Network Segmentation Controls",
+        "Supply Chain Business Continuity Plan": "BCP Controls",
+        "Process owner": "Control owner",
+        "service organization": "service provider",
+    }
+
+    for old, new in replacements.items():
+        s = s.replace(old, new)
+
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def format_date(value) -> str:
+    if pd.isna(value):
+        return ""
+    try:
+        return pd.to_datetime(value).strftime("%m/%d/%Y")
+    except Exception:
+        return str(value)
+
+
+def ensure_columns(df: pd.DataFrame, needed: List[str]) -> None:
+    missing = [c for c in needed if c not in df.columns]
+    if missing:
+        raise KeyError(f"Missing required columns: {missing}")
+
+
+def coalesce_columns(df: pd.DataFrame, target_col: str, candidates: List[str]) -> pd.DataFrame:
+    df = df.copy()
+    if target_col in df.columns:
+        return df
+
+    for c in candidates:
+        if c in df.columns:
+            df[target_col] = df[c]
+            return df
+
+    df[target_col] = ""
+    return df
+
+
+def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    # Make sure business contact recommendations becomes control owner
+    if "control_owner" not in df.columns:
+        df["control_owner"] = ""
+
+    for fallback in ["Business_Contact_Recommendations", "Business_Contact_Issue", "control_owner"]:
+        if fallback in df.columns:
+            df["control_owner"] = np.where(
+                clean_series(df["control_owner"], "").eq(""),
+                df[fallback],
+                df["control_owner"],
+            )
+
+    # clean important columns
+    for col in [
+        "finding_summary",
+        "root_cause",
+        "control_owner",
+        "sector_responsible",
+        "system_area",
+        "status",
+        "actual_status",
+        "sox_type",
+        "rating",
+        "repeat_finding",
+    ]:
         if col in df.columns:
-            dt = pd.to_datetime(df[col], errors="coerce")
-            if dt.notna().any():
-                return dt.dt.year
-    raise KeyError("Could not infer year. Expected one of: final_month_snapshot, issue_creation_date, release_date, create_date, audit_year")
+            df[col] = clean_series(df[col])
+
+    if "finding_summary" in df.columns:
+        df["finding_summary"] = df["finding_summary"].apply(clean_finding_text)
+
+    if "year" in df.columns:
+        df["year"] = pd.to_numeric(df["year"], errors="coerce")
+
+    if "release_date" in df.columns:
+        df["release_date_fmt"] = df["release_date"].apply(format_date)
+    else:
+        df["release_date_fmt"] = ""
+
+    if "remediation_date" in df.columns:
+        df["remediation_date_fmt"] = df["remediation_date"].apply(format_date)
+    else:
+        df["remediation_date_fmt"] = ""
+
+    if "status" not in df.columns:
+        df["status"] = ""
+
+    if "actual_status" not in df.columns:
+        df["actual_status"] = ""
+
+    if "sox_type" not in df.columns:
+        df["sox_type"] = MISSING_LABEL
+
+    return df
 
 
-def infer_month_date(df: pd.DataFrame) -> pd.Series:
-    for col in ["final_month_snapshot", "issue_creation_date", "release_date", "create_date"]:
-        if col in df.columns:
-            dt = pd.to_datetime(df[col], errors="coerce")
-            if dt.notna().any():
-                return dt
-    raise KeyError("Could not infer chart date field.")
+# =========================
+# FILTERS
+# =========================
+def filter_years(df: pd.DataFrame, years=(2025, 2026)) -> pd.DataFrame:
+    if "year" not in df.columns:
+        return df.copy()
+    return df[df["year"].isin(years)].copy()
 
 
-def filter_target_years(df: pd.DataFrame, years: List[int]) -> pd.DataFrame:
-    out = df.copy()
-    out["report_year"] = infer_year(out)
-    out = out[out["report_year"].isin(years)].copy()
-    out["report_month_date"] = infer_month_date(out)
-    out["rating_std"] = standardize_rating(out["rating"]) if "rating" in out.columns else MISSING
-    if "control_owner" in out.columns:
-        out["control_owner"] = normalize_text(out["control_owner"])
-    return out
+def filter_open_issues(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    if "status" in df.columns:
+        mask = df["status"].apply(is_open_status)
+        return df[mask].copy()
+    return df.copy()
 
 
-def ensure_dir(path: Path):
+def filter_repeat_findings(df: pd.DataFrame) -> pd.DataFrame:
+    if "repeat_finding" not in df.columns:
+        return df.iloc[0:0].copy()
+    s = yes_no_normalize(df["repeat_finding"])
+    return df[s == "yes"].copy()
+
+
+def filter_critical_findings(df: pd.DataFrame) -> pd.DataFrame:
+    if "rating" not in df.columns:
+        return df.iloc[0:0].copy()
+    s = clean_series(df["rating"]).str.lower()
+    return df[s == "critical"].copy()
+
+
+def filter_sox_open(df: pd.DataFrame) -> pd.DataFrame:
+    df = filter_open_issues(df)
+    if "sox_type" in df.columns:
+        s = clean_series(df["sox_type"]).str.lower()
+        # remove type 3 completely
+        df = df[~s.eq("type 3")].copy()
+    return df
+
+
+# =========================
+# OUTPUT UTILS
+# =========================
+def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def wrap_label(text: str, width: int = 24) -> str:
-    txt = str(text)
-    return "\n".join(textwrap.wrap(txt, width=width, break_long_words=False, break_on_hyphens=False)) if len(txt) > width else txt
+def wrapped_title(title: str, width: int = 55) -> str:
+    return textwrap.fill(title, width=width, break_long_words=False, break_on_hyphens=False)
 
 
-def shorten_cell(text: str, width: int = 44) -> str:
-    txt = " ".join(str(text).split())
-    if txt in {"", "nan", "NaN", "None"}:
-        return ""
-    return "\n".join(textwrap.wrap(txt, width=width, break_long_words=False, break_on_hyphens=False))
+def add_title(ax, title: str) -> None:
+    ax.set_title(wrapped_title(title), loc="left", pad=26, color=COLOR_RED, fontsize=18, fontweight="bold")
 
 
-def style_axes(ax, title: str, subtitle: Optional[str] = None, xlabel: str = "", ylabel: str = ""):
-    wrapped_title = wrap_label(title, 55)
-    ax.set_title(wrapped_title, loc="left", color=RED, pad=14)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.grid(axis="x" if ylabel == "" else "y", alpha=0.22)
-    for spine in ["top", "right"]:
-        ax.spines[spine].set_visible(False)
-    if subtitle:
-        ax.text(0.0, 1.01, subtitle, transform=ax.transAxes, ha="left", va="bottom", fontsize=9, color=DARK)
+def severity_color(label: str) -> str:
+    s = clean_text(label, "").lower()
+    if s == "critical":
+        return COLOR_CRITICAL
+    if s == "major":
+        return COLOR_MAJOR
+    if s == "minor":
+        return COLOR_MINOR
+    return "#BFBFBF"
 
 
-def finalize_figure(fig, top: float = 0.88):
-    fig.subplots_adjust(top=top, left=0.12, right=0.88, bottom=0.12)
+def table_row_colors(n_rows: int) -> List[str]:
+    colors = []
+    for i in range(n_rows):
+        colors.append(COLOR_ROW_A if i % 2 == 0 else COLOR_ROW_B)
+    return colors
 
 
-def save_kpi_table(kpis: List[Tuple[str, str]], path: Path, title: str):
-    df = pd.DataFrame(kpis, columns=["Metric", "Value"])
-    fig, ax = plt.subplots(figsize=(8.3, max(3.2, 0.58 * len(df) + 1.4)))
-    ax.axis("off")
-    ax.set_title(wrap_label(title, 48), fontsize=14, fontweight="bold", loc="left", color=RED, pad=12)
-
-    table = ax.table(cellText=df.values, colLabels=df.columns, cellLoc="left", colLoc="left", loc="upper left")
-    table.auto_set_font_size(False)
-    table.set_fontsize(10)
-    table.scale(1, 1.6)
-
-    col_widths = {0: 0.74, 1: 0.18}
-    for (row, col), cell in table.get_celld().items():
-        cell.set_linewidth(0.6)
-        if col in col_widths:
-            cell.set_width(col_widths[col])
-        if row == 0:
-            cell.set_facecolor(RED)
-            cell.set_text_props(color="white", weight="bold")
-            cell.set_height(0.08)
-        else:
-            cell.set_facecolor("#f9f9f9" if row % 2 else "white")
-            cell.set_height(0.075)
-    plt.tight_layout()
-    fig.savefig(path, bbox_inches="tight")
-    plt.close(fig)
-
-
-def save_detail_table_pages(
+# =========================
+# TABLE RENDERING
+# =========================
+def render_table_image(
     df: pd.DataFrame,
-    outdir: Path,
-    base_filename: str,
     title: str,
-    rows_per_page: int = 14,
-    font_size: int = 8,
-    row_height: float = 0.072,
+    path: Path,
+    col_widths: Optional[List[float]] = None,
+    font_size: int = 10,
+    row_height_scale: float = 1.65,
+    title_wrap_width: int = 55,
     wrap_widths: Optional[Dict[str, int]] = None,
+    figsize: Tuple[float, float] = (20, 10),
 ):
     if df.empty:
-        return []
-
-    display = df.copy().fillna("")
-    wrap_widths = wrap_widths or {}
-    for col in display.columns:
-        width = wrap_widths.get(col, 30)
-        display[col] = display[col].map(lambda x: shorten_cell(x, width))
-
-    # practical width allocation for business-facing detail tables
-    col_width_map = {
-        "Year": 0.05,
-        "Finding Summary": 0.16,
-        "System & Control": 0.10,
-        "System & Control / Area": 0.11,
-        "Sector Responsible": 0.11,
-        "Control Owner": 0.11,
-        "Finding Root Cause": 0.17,
-        "Release Date": 0.08,
-        "Action Plan Remediation Date": 0.10,
-        "Remediation Date": 0.09,
-        "Actual Status": 0.09,
-        "Status": 0.08,
-        "SOX Type": 0.07,
-    }
-
-    pages = []
-    total_pages = math.ceil(len(display) / rows_per_page)
-    for page_idx in range(total_pages):
-        start = page_idx * rows_per_page
-        end = start + rows_per_page
-        part = display.iloc[start:end].copy()
-
-        fig_h = max(6.3, len(part) * 0.55 + 1.8)
-        fig, ax = plt.subplots(figsize=(19, fig_h))
-        ax.axis("off")
-        page_title = f"{title} (Page {page_idx + 1} of {total_pages})" if total_pages > 1 else title
-        ax.set_title(wrap_label(page_title, 65), fontsize=14, fontweight="bold", loc="left", color=RED, pad=12)
-
-        table = ax.table(
-            cellText=part.values,
-            colLabels=part.columns,
-            cellLoc="left",
-            colLoc="left",
-            loc="upper left",
-        )
-        table.auto_set_font_size(False)
-        table.set_fontsize(font_size)
-        table.scale(1, 1.18)
-
-        for (row, col), cell in table.get_celld().items():
-            header = row == 0
-            cell.set_linewidth(0.75)
-            col_name = part.columns[col]
-            cell.set_width(col_width_map.get(col_name, 0.09))
-            if header:
-                cell.set_facecolor(RED)
-                cell.set_text_props(color="white", weight="bold", va="center")
-                cell.set_height(row_height + 0.01)
-            else:
-                cell.set_facecolor(LIGHT_ROW if row % 2 else WHITE)
-                cell.set_text_props(color=DARK, va="top")
-                cell.set_height(row_height)
-
-        plt.tight_layout()
-        file_path = outdir / f"{base_filename}_page_{page_idx + 1}.png"
-        fig.savefig(file_path, bbox_inches="tight")
-        plt.close(fig)
-        pages.append(file_path)
-
-    return pages
-
-
-def chart_metrics_summary(df: pd.DataFrame, outdir: Path):
-    rows = []
-    for year in TARGET_YEARS:
-        d = df[df["report_year"] == year].copy()
-        total_repeat = int((normalize_yes_no(d["repeat_finding"]) == "yes").sum()) if "repeat_finding" in d.columns else 0
-        critical_sox = int((d["rating_std"] == "Critical").sum())
-        critical_non_sox = 0
-        if "sox_type" in d.columns:
-            sox_type = normalize_text(d["sox_type"]).str.lower()
-            critical_non_sox = int(((d["rating_std"] == "Critical") & ~sox_type.str.contains("type", na=False)).sum())
-        overdue = int((normalize_yes_no(d["overdue_flag"]) == "yes").sum()) if "overdue_flag" in d.columns else 0
-        rows.extend([
-            (f"{year} Current Repeat Findings", f"{total_repeat:,}"),
-            (f"{year} Current Critical SOX Findings", f"{critical_sox:,}"),
-            (f"{year} Current Critical Non-SOX Findings", f"{critical_non_sox:,}"),
-            (f"{year} Current Overdue Findings", f"{overdue:,}"),
-        ])
-    save_kpi_table(rows, outdir / "01_metrics_summary_2025_2026.png", "Metrics – Current Open SOX / Audit Findings (2025 and 2026)")
-
-
-def chart_open_findings_by_sector(df: pd.DataFrame, outdir: Path):
-    if "entity_sector" not in df.columns:
-        return
-    temp = df.copy()
-    temp["entity_sector"] = normalize_text(temp["entity_sector"])
-    temp["entity_sector_label"] = temp["entity_sector"].map(lambda x: wrap_label(x, 24))
-    temp["sox_type_std"] = normalize_text(temp["sox_type"]) if "sox_type" in temp.columns else "Unspecified"
-
-    for year in TARGET_YEARS:
-        d = temp[temp["report_year"] == year].copy()
-        if d.empty:
-            continue
-        pivot = d.pivot_table(index="entity_sector_label", columns="rating_std", values="issue_id", aggfunc="count", fill_value=0)
-        ordered_cols = [c for c in ["Critical", "Major", "Minor"] if c in pivot.columns] + [c for c in pivot.columns if c not in ["Critical", "Major", "Minor"]]
-        pivot = pivot[ordered_cols]
-        pivot["Total"] = pivot.sum(axis=1)
-        pivot = pivot.sort_values("Total", ascending=True).drop(columns=["Total"])
-
-        fig, ax = plt.subplots(figsize=(13.5, max(6.5, 0.62 * len(pivot) + 2.7)))
-        left = np.zeros(len(pivot))
-        y = np.arange(len(pivot))
-        cols = list(pivot.columns)
-        for col, color in zip(cols, rating_colors(cols)):
-            vals = pivot[col].values
-            bars = ax.barh(y, vals, left=left, label=col, color=color)
-            for bar, v, l in zip(bars, vals, left):
-                if v > 0:
-                    ax.text(l + v / 2, bar.get_y() + bar.get_height() / 2, f"{int(v)}", ha="center", va="center", fontsize=9)
-            left += vals
-        ax.set_yticks(y)
-        ax.set_yticklabels(pivot.index)
-        style_axes(
-            ax,
-            f"{year} YTD IT SOX Open Findings by Sector",
-            subtitle=f"Reporting year explicitly shown: {year} | Professional severity view",
-            xlabel="Open Finding Count",
-        )
-        ax.legend(title="Severity", bbox_to_anchor=(1.02, 1), loc="upper left")
-        finalize_figure(fig, top=0.84)
-        fig.savefig(outdir / f"02_open_findings_by_sector_{year}.png", bbox_inches="tight")
-        plt.close(fig)
-
-        if "sox_type" in d.columns:
-            tbl = d.pivot_table(index="entity_sector", columns="sox_type_std", values="issue_id", aggfunc="count", fill_value=0)
-            tbl["Grand Total"] = tbl.sum(axis=1)
-            grand = pd.DataFrame(tbl.sum(axis=0)).T
-            grand.index = ["Grand Total"]
-            tbl = pd.concat([tbl, grand], axis=0)
-            tbl = tbl.reset_index().rename(columns={"entity_sector": "Sector"})
-            save_detail_table_pages(
-                tbl,
-                outdir,
-                f"03_open_findings_sector_type_table_{year}",
-                f"{year} YTD IT SOX Open Findings by Sector – Type Breakdown",
-                rows_per_page=18,
-                font_size=9,
-                row_height=0.065,
-                wrap_widths={"Sector": 22},
-            )
-
-
-def chart_risk_area_and_quarterly_trends(df: pd.DataFrame, outdir: Path):
-    if "area" not in df.columns:
-        return
-    temp = df.copy()
-    temp["area"] = normalize_text(temp["area"])
-    temp["area_label"] = temp["area"].map(lambda x: wrap_label(x, 26))
-    temp["quarter"] = temp["report_month_date"].dt.to_period("Q").astype(str)
-    temp = temp[temp["quarter"].str.startswith(("2025", "2026"))]
-
-    for year in TARGET_YEARS:
-        d = temp[temp["report_year"] == year].copy()
-        if d.empty:
-            continue
-
-        risk = d.pivot_table(index="area_label", columns="rating_std", values="issue_id", aggfunc="count", fill_value=0)
-        risk = risk[[c for c in ["Critical", "Major", "Minor"] if c in risk.columns]]
-        risk["Total"] = risk.sum(axis=1)
-        risk = risk.sort_values("Total", ascending=True).tail(10).drop(columns=["Total"])
-
-        fig, ax = plt.subplots(figsize=(14, max(6.5, 0.62 * len(risk) + 2.6)))
-        left = np.zeros(len(risk))
-        y = np.arange(len(risk))
-        cols = list(risk.columns)
-        for col, color in zip(cols, rating_colors(cols)):
-            vals = risk[col].values
-            bars = ax.barh(y, vals, left=left, label=col, color=color)
-            for bar, v, l in zip(bars, vals, left):
-                if v > 0:
-                    ax.text(l + v / 2, bar.get_y() + bar.get_height() / 2, f"{int(v)}", ha="center", va="center", fontsize=9)
-            left += vals
-        ax.set_yticks(y)
-        ax.set_yticklabels(risk.index)
-        style_axes(
-            ax,
-            f"{year} YTD IT SOX Open Findings Risk Area & Trends",
-            subtitle=f"Top risk areas for {year} | Year explicitly shown on chart",
-            xlabel="Finding Count",
-        )
-        ax.legend(title="Severity", bbox_to_anchor=(1.02, 1), loc="upper left")
-        finalize_figure(fig, top=0.84)
-        fig.savefig(outdir / f"04_risk_area_by_severity_{year}.png", bbox_inches="tight")
-        plt.close(fig)
-
-    quarter_pivot = temp.pivot_table(index="quarter", columns="rating_std", values="issue_id", aggfunc="count", fill_value=0)
-    if not quarter_pivot.empty:
-        ordered_index = sorted(quarter_pivot.index.tolist())
-        quarter_pivot = quarter_pivot.loc[ordered_index]
-        cols = [c for c in ["Critical", "Major", "Minor"] if c in quarter_pivot.columns]
-        fig, ax = plt.subplots(figsize=(12.8, 6.0))
-        for col, color in zip(cols, rating_colors(cols)):
-            ax.plot(quarter_pivot.index, quarter_pivot[col], marker="o", linewidth=2.4, label=col, color=color)
-            for x, y in zip(quarter_pivot.index, quarter_pivot[col]):
-                ax.text(x, y + 0.2, f"{int(y)}", ha="center", va="bottom", fontsize=8)
-        style_axes(
-            ax,
-            "Quarterly Trend of Open Findings (2025–2026)",
-            subtitle="Quarter labels explicitly show both 2025 and 2026",
-            xlabel="Quarter",
-            ylabel="Open Finding Count",
-        )
-        ax.legend(title="Severity")
-        ax.tick_params(axis="x", rotation=0)
-        finalize_figure(fig, top=0.84)
-        fig.savefig(outdir / "05_quarterly_trend_2025_2026.png", bbox_inches="tight")
-        plt.close(fig)
-
-
-def chart_issue_aging(df: pd.DataFrame, outdir: Path):
-    if "days_old" not in df.columns:
-        return
-    temp = df.copy()
-    temp["days_old_num"] = pd.to_numeric(temp["days_old"], errors="coerce")
-    temp = temp[temp["days_old_num"].notna()].copy()
-    if temp.empty:
         return
 
-    bins = [-np.inf, 30, 60, 90, 180, 365, np.inf]
-    labels = ["0-30", "31-60", "61-90", "91-180", "181-365", "366+"]
-    temp["age_bucket"] = pd.cut(temp["days_old_num"], bins=bins, labels=labels)
+    display_df = df.copy()
 
-    pivot = temp.pivot_table(index="age_bucket", columns="report_year", values="issue_id", aggfunc="count", fill_value=0)
-    pivot = pivot.reindex(labels)
-    years_present = [y for y in TARGET_YEARS if y in pivot.columns]
-    if not years_present:
-        return
+    if wrap_widths:
+        for col, width in wrap_widths.items():
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(lambda x: wrap_text(x, width))
 
-    fig, ax = plt.subplots(figsize=(11.5, 5.8))
-    x = np.arange(len(pivot.index))
-    width = 0.34
-    year_colors = {2025: BLUE_2025, 2026: RED}
-    for i, year in enumerate(years_present):
-        offset = (i - (len(years_present) - 1) / 2) * width
-        bars = ax.bar(x + offset, pivot[year].values, width=width, label=str(year), color=year_colors.get(year, GREY))
-        for bar, val in zip(bars, pivot[year].values):
-            if val > 0:
-                ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.15, f"{int(val)}", ha="center", va="bottom", fontsize=8)
-    ax.set_xticks(x)
-    ax.set_xticklabels(pivot.index.astype(str))
-    style_axes(
-        ax,
-        "Issue Aging Distribution (2025 vs 2026)",
-        subtitle="Age buckets compare open findings across both years",
-        xlabel="Age Bucket",
-        ylabel="Finding Count",
+    fig, ax = plt.subplots(figsize=figsize)
+    fig.patch.set_facecolor(COLOR_BG)
+    ax.axis("off")
+
+    ax.set_title(
+        textwrap.fill(title, width=title_wrap_width, break_long_words=False, break_on_hyphens=False),
+        loc="left",
+        pad=18,
+        color=COLOR_RED,
+        fontsize=18,
+        fontweight="bold",
     )
-    ax.legend(title="Year")
-    finalize_figure(fig, top=0.84)
-    fig.savefig(outdir / "06_issue_aging_2025_2026.png", bbox_inches="tight")
+
+    table = ax.table(
+        cellText=display_df.values,
+        colLabels=display_df.columns,
+        colLoc="left",
+        cellLoc="left",
+        loc="upper left",
+        colWidths=col_widths,
+    )
+
+    table.auto_set_font_size(False)
+    table.set_fontsize(font_size)
+    table.scale(1, row_height_scale)
+
+    nrows = display_df.shape[0]
+    ncols = display_df.shape[1]
+    body_colors = table_row_colors(nrows)
+
+    for (r, c), cell in table.get_celld().items():
+        cell.set_edgecolor("#222222")
+        cell.set_linewidth(0.8)
+        cell.get_text().set_wrap(True)
+
+        if r == 0:
+            cell.set_facecolor(COLOR_RED)
+            cell.get_text().set_color(COLOR_HEADER_TEXT)
+            cell.get_text().set_weight("bold")
+            cell.set_height(cell.get_height() * 1.15)
+        else:
+            cell.set_facecolor(body_colors[r - 1])
+
+    plt.subplots_adjust(top=0.88, left=0.01, right=0.99, bottom=0.02)
+    fig.savefig(path, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
 
 
-def detail_critical_findings(df: pd.DataFrame, outdir: Path):
-    d = df[df["rating_std"] == "Critical"].copy()
-    if d.empty:
+def paginate_table(
+    df: pd.DataFrame,
+    title: str,
+    outdir: Path,
+    filename_prefix: str,
+    rows_per_page: int,
+    col_widths: List[float],
+    font_size: int,
+    row_height_scale: float,
+    wrap_widths: Dict[str, int],
+    figsize: Tuple[float, float],
+):
+    if df.empty:
         return
-    cols = []
-    preferred = [
-        ("report_year", "Year"),
-        ("finding_title", "Finding Summary"),
-        ("area", "System & Control / Area"),
-        ("entity_sector", "Sector Responsible"),
-        ("control_owner", "Control Owner"),
-        ("root_cause", "Finding Root Cause"),
-        ("release_date", "Release Date"),
-        ("revised_due_date", "Action Plan Remediation Date"),
-        ("remediation_status", "Status"),
+
+    total_pages = math.ceil(len(df) / rows_per_page)
+
+    for page_num in range(total_pages):
+        start = page_num * rows_per_page
+        end = start + rows_per_page
+        chunk = df.iloc[start:end].copy()
+
+        page_title = title if total_pages == 1 else f"{title} (Page {page_num + 1} of {total_pages})"
+        outfile = outdir / f"{filename_prefix}_page_{page_num + 1}.png"
+
+        render_table_image(
+            chunk,
+            page_title,
+            outfile,
+            col_widths=col_widths,
+            font_size=font_size,
+            row_height_scale=row_height_scale,
+            wrap_widths=wrap_widths,
+            figsize=figsize,
+        )
+
+
+# =========================
+# CHARTS
+# =========================
+def chart_open_findings_by_sector_risk(df: pd.DataFrame, year: int, outdir: Path):
+    year_df = filter_sox_open(df)
+    year_df = year_df[year_df["year"] == year].copy()
+
+    ensure_columns(year_df, ["sector_responsible", "rating", "record_id"])
+
+    if year_df.empty:
+        return
+
+    year_df["sector_responsible"] = clean_series(year_df["sector_responsible"])
+    year_df["rating"] = clean_series(year_df["rating"])
+
+    pivot = year_df.pivot_table(
+        index="system_area" if "system_area" in year_df.columns else "sector_responsible",
+        columns="rating",
+        values="record_id",
+        aggfunc="count",
+        fill_value=0,
+    )
+
+    ordered_cols = [c for c in ["Critical", "Major", "Minor"] if c in pivot.columns]
+    if not ordered_cols:
+        return
+    pivot = pivot[ordered_cols]
+
+    pivot["Total"] = pivot.sum(axis=1)
+    pivot = pivot.sort_values("Total", ascending=False).drop(columns=["Total"])
+
+    fig_h = max(6, len(pivot) * 0.75)
+    fig, ax = plt.subplots(figsize=(16, fig_h))
+    fig.patch.set_facecolor(COLOR_BG)
+
+    left = np.zeros(len(pivot))
+    y = np.arange(len(pivot))
+
+    for col in pivot.columns:
+        vals = pivot[col].values
+        bars = ax.barh(y, vals, left=left, color=severity_color(col), label=col)
+        for i, (bar, v) in enumerate(zip(bars, vals)):
+            if v > 0:
+                ax.text(left[i] + v / 2, bar.get_y() + bar.get_height() / 2, f"{int(v)}", ha="center", va="center", fontsize=11)
+        left += vals
+
+    ax.set_yticks(y)
+    ax.set_yticklabels(pivot.index.tolist(), fontsize=12)
+    ax.invert_yaxis()
+    ax.grid(axis="x", color=COLOR_GRID, alpha=0.8)
+    ax.set_axisbelow(True)
+    add_title(ax, f"{year} YTD IT SOX Open Findings Risk Area & Trends")
+    ax.legend(title="Severity", loc="upper left", bbox_to_anchor=(1.02, 1.0), fontsize=11, title_fontsize=12)
+
+    plt.subplots_adjust(top=0.88, left=0.22, right=0.86, bottom=0.06)
+    fig.savefig(outdir / f"{year}_open_findings_risk_area_trends.png", bbox_inches="tight", facecolor=fig.get_facecolor())
+    plt.close(fig)
+
+
+def chart_sox_open_type_breakdown(df: pd.DataFrame, year: int, outdir: Path):
+    year_df = filter_sox_open(df)
+    year_df = year_df[year_df["year"] == year].copy()
+
+    ensure_columns(year_df, ["sector_responsible", "sox_type", "record_id"])
+
+    if year_df.empty:
+        return
+
+    year_df["sector_responsible"] = clean_series(year_df["sector_responsible"])
+    year_df["sox_type"] = clean_series(year_df["sox_type"])
+
+    # REMOVE TYPE 3 COMPLETELY
+    year_df = year_df[~year_df["sox_type"].str.lower().eq("type 3")].copy()
+
+    pivot = year_df.pivot_table(
+        index="sector_responsible",
+        columns="sox_type",
+        values="record_id",
+        aggfunc="count",
+        fill_value=0,
+    )
+
+    ordered_cols = ["Missing / Not Provided", "Type 1", "Type 2"]
+    pivot = pivot[[c for c in ordered_cols if c in pivot.columns]]
+
+    pivot["Grand Total"] = pivot.sum(axis=1)
+    pivot = pivot.sort_values("Grand Total", ascending=False)
+
+    grand = pivot.sum(numeric_only=True).to_frame().T
+    grand.index = ["Grand Total"]
+    pivot = pd.concat([pivot, grand], axis=0)
+
+    pivot = pivot.reset_index()
+    pivot = pivot.rename(columns={"sector_responsible": "Sector Responsible"})
+
+    render_table_image(
+        pivot,
+        f"{year} YTD IT SOX Open Findings by Sector - Type Breakdown",
+        outdir / f"{year}_sox_open_findings_type_breakdown.png",
+        col_widths=[0.18, 0.18, 0.18, 0.18, 0.18],
+        font_size=12,
+        row_height_scale=1.9,
+        wrap_widths={"Sector Responsible": 22},
+        figsize=(16, 7),
+    )
+
+
+# =========================
+# DETAIL TABLES
+# =========================
+def report_critical_findings(df: pd.DataFrame, outdir: Path):
+    crit = filter_critical_findings(filter_years(df))
+    crit = crit[crit["year"].isin([2025, 2026])].copy()
+
+    if crit.empty:
+        return
+
+    cols = [
+        "year",
+        "finding_summary",
+        "system_area",
+        "sector_responsible",
+        "control_owner",
+        "root_cause",
+        "release_date_fmt",
+        "remediation_date_fmt",
+        "status",
     ]
-    rename = {}
-    for src, label in preferred:
-        if src in d.columns:
-            cols.append(src)
-            rename[src] = label
-    tbl = d[cols].copy().rename(columns=rename)
-    if "Release Date" in tbl.columns:
-        tbl["Release Date"] = pd.to_datetime(tbl["Release Date"], errors="coerce").dt.strftime("%m/%d/%Y")
-    if "Action Plan Remediation Date" in tbl.columns:
-        tbl["Action Plan Remediation Date"] = pd.to_datetime(tbl["Action Plan Remediation Date"], errors="coerce").dt.strftime("%m/%d/%Y")
-    if "Control Owner" in tbl.columns:
-        tbl["Control Owner"] = tbl["Control Owner"].replace(MISSING, "")
-    sort_cols = [c for c in ["Year", "Release Date"] if c in tbl.columns]
-    tbl = tbl.sort_values(sort_cols, ascending=True)
-    save_detail_table_pages(
-        tbl,
-        outdir,
-        "07_critical_findings_detail_2025_2026",
+    for c in cols:
+        if c not in crit.columns:
+            crit[c] = ""
+
+    report = crit[cols].copy()
+    report.columns = [
+        "Year",
+        "Finding Summary",
+        "System & Control / Area",
+        "Sector Responsible",
+        "Control Owner",
+        "Finding Root Cause",
+        "Release Date",
+        "Action Plan Remediation Date",
+        "Status",
+    ]
+
+    report["Year"] = report["Year"].fillna("").apply(lambda x: "" if x == "" else str(int(float(x))) if str(x).replace(".", "", 1).isdigit() else str(x))
+
+    report = report.sort_values(by=["Year", "Release Date", "Finding Summary"], ascending=[True, True, True])
+
+    paginate_table(
+        report,
         "Critical IT SOX Findings – Includes Release Date and Control Owner",
-        rows_per_page=12,
-        font_size=8,
-        row_height=0.09,
-        wrap_widths={
-            "Finding Summary": 34,
-            "System & Control / Area": 20,
-            "Sector Responsible": 18,
-            "Control Owner": 18,
-            "Finding Root Cause": 34,
-            "Status": 16,
-        },
-    )
-
-
-def detail_repeat_findings(df: pd.DataFrame, outdir: Path):
-    if "repeat_finding" not in df.columns:
-        return
-    mask = normalize_yes_no(df["repeat_finding"]) == "yes"
-    d = df[mask].copy()
-    if d.empty:
-        return
-    cols = []
-    preferred = [
-        ("report_year", "Year"),
-        ("finding_title", "Finding Summary"),
-        ("area", "System & Control"),
-        ("entity_sector", "Sector Responsible"),
-        ("control_owner", "Control Owner"),
-        ("root_cause", "Finding Root Cause"),
-        ("remediation_status", "Actual Status"),
-        ("revised_due_date", "Remediation Date"),
-        ("sox_type", "SOX Type"),
-    ]
-    rename = {}
-    for src, label in preferred:
-        if src in d.columns:
-            cols.append(src)
-            rename[src] = label
-    tbl = d[cols].copy().rename(columns=rename)
-    if "Remediation Date" in tbl.columns:
-        tbl["Remediation Date"] = pd.to_datetime(tbl["Remediation Date"], errors="coerce").dt.strftime("%m/%d/%Y")
-    if "Actual Status" in tbl.columns:
-        tbl["Actual Status"] = tbl["Actual Status"].replace(MISSING, "")
-    if "Control Owner" in tbl.columns:
-        tbl["Control Owner"] = tbl["Control Owner"].replace(MISSING, "")
-    sort_cols = [c for c in ["Year", "Remediation Date"] if c in tbl.columns]
-    tbl = tbl.sort_values(sort_cols, ascending=True)
-    save_detail_table_pages(
-        tbl,
         outdir,
-        "08_repeat_findings_detail_2025_2026",
-        "Current Repeat IT SOX Findings – Control Owner and Actual Status Included",
-        rows_per_page=12,
-        font_size=8,
-        row_height=0.09,
+        "critical_it_sox_findings",
+        rows_per_page=9,
+        col_widths=[0.06, 0.19, 0.14, 0.13, 0.14, 0.20, 0.10, 0.12, 0.10],
+        font_size=9.5,
+        row_height_scale=3.0,
         wrap_widths={
-            "Finding Summary": 34,
-            "System & Control": 20,
+            "Finding Summary": 30,
+            "System & Control / Area": 22,
             "Sector Responsible": 18,
             "Control Owner": 18,
-            "Finding Root Cause": 34,
-            "Actual Status": 16,
-            "SOX Type": 12,
+            "Finding Root Cause": 32,
+            "Status": 18,
         },
+        figsize=(24, 10),
     )
 
 
-def create_run_log(df: pd.DataFrame, outdir: Path, dataset_path: Path, sheet_name: str):
-    years = df["report_year"].value_counts().sort_index().to_dict()
-    lines = [
-        f"Dataset: {dataset_path}",
-        f"Sheet used: {sheet_name}",
-        f"Rows after year filter: {len(df):,}",
-        f"Columns after alias normalization: {len(df.columns):,}",
-        f"Target years: {TARGET_YEARS}",
-        f"Rows by year: {years}",
-        "",
-        "Key fixes in v2:",
-        "- Fixed chart title/header overlap by increasing top margin and wrapping long titles.",
-        "- Control Owner now prioritizes Business_Contact_Recommendations.",
-        "- Repeat and critical detail reports are paginated for readability.",
-        "- Table cells are wrapped and row heights expanded for professional output.",
+def report_repeat_findings(df: pd.DataFrame, outdir: Path):
+    rpt = filter_repeat_findings(filter_years(df))
+    rpt = rpt[~clean_series(rpt["sox_type"]).str.lower().eq("type 3")] if "sox_type" in rpt.columns else rpt
+
+    if rpt.empty:
+        return
+
+    cols = [
+        "year",
+        "finding_summary",
+        "system_area",
+        "sector_responsible",
+        "control_owner",
+        "root_cause",
+        "actual_status",
+        "remediation_date_fmt",
+        "sox_type",
     ]
-    (outdir / "run_log.txt").write_text("\n".join(lines), encoding="utf-8")
+    for c in cols:
+        if c not in rpt.columns:
+            rpt[c] = ""
+
+    report = rpt[cols].copy()
+    report.columns = [
+        "Year",
+        "Finding Summary",
+        "System & Control",
+        "Sector Responsible",
+        "Control Owner",
+        "Finding Root Cause",
+        "Actual Status",
+        "Remediation Date",
+        "SOX Type",
+    ]
+
+    report["Year"] = report["Year"].fillna("").apply(lambda x: "" if x == "" else str(int(float(x))) if str(x).replace(".", "", 1).isdigit() else str(x))
+    report = report.sort_values(by=["Year", "SOX Type", "Finding Summary"], ascending=[True, True, True])
+
+    paginate_table(
+        report,
+        "Current Repeat IT SOX Findings – Updated with Actual Status",
+        outdir,
+        "current_repeat_it_sox_findings",
+        rows_per_page=16,
+        col_widths=[0.05, 0.17, 0.11, 0.10, 0.11, 0.20, 0.10, 0.09, 0.07],
+        font_size=8.5,
+        row_height_scale=1.9,
+        wrap_widths={
+            "Finding Summary": 28,
+            "System & Control": 18,
+            "Sector Responsible": 15,
+            "Control Owner": 16,
+            "Finding Root Cause": 30,
+            "Actual Status": 18,
+            "SOX Type": 10,
+        },
+        figsize=(22, 11),
+    )
 
 
+# =========================
+# SUMMARY METRICS
+# =========================
+def report_metrics_summary(df: pd.DataFrame, outdir: Path):
+    data = filter_years(df)
+    open_data = filter_open_issues(data)
+    repeat_data = filter_repeat_findings(data)
+    crit_data = filter_critical_findings(data)
+    overdue_data = data.iloc[0:0].copy()
+
+    if "status" in data.columns:
+        overdue_mask = clean_series(data["status"]).str.lower().str.contains("overdue", na=False)
+        overdue_data = data[overdue_mask].copy()
+
+    rows = []
+    for year in [2025, 2026]:
+        rows.append({
+            "Year": year,
+            "Current Repeat Findings": len(repeat_data[repeat_data["year"] == year]),
+            "Current Critical SOX Findings": len(crit_data[crit_data["year"] == year]),
+            "Current Open SOX Findings": len(open_data[open_data["year"] == year]),
+            "Current Overdue Findings": len(overdue_data[overdue_data["year"] == year]),
+        })
+
+    metrics_df = pd.DataFrame(rows)
+
+    render_table_image(
+        metrics_df,
+        "Metrics – Current Open SOX / Audit Findings",
+        outdir / "metrics_current_open_findings.png",
+        col_widths=[0.12, 0.22, 0.22, 0.22, 0.22],
+        font_size=13,
+        row_height_scale=2.4,
+        figsize=(16, 4.8),
+    )
+
+
+# =========================
+# MAIN REPORT RUNNER
+# =========================
+def generate_reports(df: pd.DataFrame, output_dir: Path):
+    ensure_dir(output_dir)
+
+    report_metrics_summary(df, output_dir)
+
+    for year in [2025, 2026]:
+        chart_open_findings_by_sector_risk(df, year, output_dir)
+        chart_sox_open_type_breakdown(df, year, output_dir)
+
+    report_critical_findings(df, output_dir)
+    report_repeat_findings(df, output_dir)
+
+
+# =========================
+# MAIN
+# =========================
 def main():
-    parser = argparse.ArgumentParser(description="Generate professional ISRM graphs aligned to the PowerPoint style for 2025 and 2026.")
-    parser.add_argument("dataset", nargs="?", default=None, help="Optional path to CSV/XLSX dataset")
-    parser.add_argument("--output-dir", default="isrm_ppt_graphs_2025_2026_v2", help="Output directory")
+    parser = argparse.ArgumentParser(description="Generate upgraded ISRM 2025/2026 SOX reporting visuals.")
+    parser.add_argument("dataset", nargs="?", default=None, help="Optional path to dataset")
+    parser.add_argument("--output-dir", default="isrm_reporting_output_v3", help="Output directory")
     args = parser.parse_args()
 
     dataset_path = auto_find_dataset(args.dataset)
-    raw_df, sheet_name = load_dataset(dataset_path)
+    raw_df, sheet_used = load_dataset(dataset_path)
+
     df = clean_headers(raw_df)
     df = apply_aliases(df)
     df = parse_dates(df)
+    df = prepare_dataframe(df)
+    df = filter_years(df, years=(2025, 2026))
 
-    filtered = filter_target_years(df, TARGET_YEARS)
-    outdir = Path(args.output_dir)
-    ensure_dir(outdir)
+    output_dir = Path(args.output_dir)
+    generate_reports(df, output_dir)
 
-    chart_metrics_summary(filtered, outdir)
-    chart_open_findings_by_sector(filtered, outdir)
-    chart_risk_area_and_quarterly_trends(filtered, outdir)
-    chart_issue_aging(filtered, outdir)
-    detail_critical_findings(filtered, outdir)
-    detail_repeat_findings(filtered, outdir)
-    create_run_log(filtered, outdir, dataset_path, sheet_name)
+    run_log = [
+        f"Dataset: {dataset_path}",
+        f"Sheet used: {sheet_used}",
+        f"Rows loaded: {len(raw_df):,}",
+        f"Rows after 2025/2026 filter: {len(df):,}",
+        f"Columns after aliasing: {len(df.columns):,}",
+        "",
+        "Generated outputs:",
+        "- metrics_current_open_findings.png",
+        "- 2025_open_findings_risk_area_trends.png",
+        "- 2025_sox_open_findings_type_breakdown.png",
+        "- 2026_open_findings_risk_area_trends.png",
+        "- 2026_sox_open_findings_type_breakdown.png",
+        "- critical_it_sox_findings_page_X.png",
+        "- current_repeat_it_sox_findings_page_X.png",
+    ]
+    (output_dir / "run_log.txt").write_text("\n".join(run_log), encoding="utf-8")
 
-    print("Professional ISRM chart generation complete.")
+    print("Report generation complete.")
     print(f"Dataset: {dataset_path}")
-    print(f"Sheet used: {sheet_name}")
-    print(f"Rows after filter: {len(filtered):,}")
-    print(f"Output folder: {outdir.resolve()}")
-    print(f"Run log: {(outdir / 'run_log.txt').resolve()}")
+    print(f"Sheet used: {sheet_used}")
+    print(f"Output folder: {output_dir.resolve()}")
+    print(f"Run log: {(output_dir / 'run_log.txt').resolve()}")
 
 
 if __name__ == "__main__":
