@@ -46,8 +46,17 @@ COLUMN_ALIASES = {
         "Issue_Finding_Title",
         "Finding",
     ],
-    "root_cause": ["Root_Cause_Description", "Finding Root Cause", "Root Cause", "Root_Cause_Insights"],
-    "control_owner": ["Business_Contact_Recommendations", "Control Owner", "Business_Contact_Issue"],
+    "root_cause": [
+        "Root_Cause_Description",
+        "Finding Root Cause",
+        "Root Cause",
+        "Root_Cause_Insights",
+    ],
+    "control_owner": [
+        "Business_Contact_Recommendations",
+        "Control Owner",
+        "Business_Contact_Issue",
+    ],
     "sector_responsible": [
         "Sector Responsible",
         "Impacted_Sector",
@@ -57,9 +66,11 @@ COLUMN_ALIASES = {
     "system_area": [
         "System & Control / Area",
         "System & Control",
+        "System_&_Control",
         "Area",
         "Control_Category",
         "Risk_Category",
+        "Area / Risk Area",
     ],
     "release_date": ["Release_Date"],
     "issue_creation_date": ["Issue_Creation_Date", "Create_Date"],
@@ -179,23 +190,35 @@ def apply_aliases(df: pd.DataFrame) -> pd.DataFrame:
 def parse_dates(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    for col in ["release_date", "issue_creation_date", "issue_closed_date", "remediation_date", "year"]:
+    date_cols = [
+        "release_date",
+        "issue_creation_date",
+        "issue_closed_date",
+        "remediation_date",
+    ]
+
+    for col in date_cols:
         if col in df.columns:
-            if col == "year":
-                parsed = pd.to_datetime(df[col], errors="coerce")
-                year_num = pd.to_numeric(df[col], errors="coerce")
-                df[col] = np.where(parsed.notna(), parsed.dt.year, year_num)
-            else:
-                df[col] = pd.to_datetime(df[col], errors="coerce")
+            df[col] = pd.to_datetime(df[col], errors="coerce")
+
+    if "year" in df.columns:
+        parsed = pd.to_datetime(df["year"], errors="coerce")
+        numeric = pd.to_numeric(df["year"], errors="coerce")
+        df["year"] = np.where(parsed.notna(), parsed.dt.year, numeric)
 
     if "year" not in df.columns:
-        if "issue_creation_date" in df.columns:
+        if "issue_creation_date" in df.columns and df["issue_creation_date"].notna().any():
             df["year"] = df["issue_creation_date"].dt.year
-        elif "release_date" in df.columns:
+        elif "release_date" in df.columns and df["release_date"].notna().any():
             df["year"] = df["release_date"].dt.year
-        elif "issue_closed_date" in df.columns:
+        elif "issue_closed_date" in df.columns and df["issue_closed_date"].notna().any():
             df["year"] = df["issue_closed_date"].dt.year
+        elif "remediation_date" in df.columns and df["remediation_date"].notna().any():
+            df["year"] = df["remediation_date"].dt.year
+        else:
+            df["year"] = np.nan
 
+    df["year"] = pd.to_numeric(df["year"], errors="coerce")
     return df
 
 
@@ -284,24 +307,9 @@ def ensure_columns(df: pd.DataFrame, needed: List[str]) -> None:
         raise KeyError(f"Missing required columns: {missing}")
 
 
-def coalesce_columns(df: pd.DataFrame, target_col: str, candidates: List[str]) -> pd.DataFrame:
-    df = df.copy()
-    if target_col in df.columns:
-        return df
-
-    for c in candidates:
-        if c in df.columns:
-            df[target_col] = df[c]
-            return df
-
-    df[target_col] = ""
-    return df
-
-
 def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    # Make sure business contact recommendations becomes control owner
     if "control_owner" not in df.columns:
         df["control_owner"] = ""
 
@@ -313,7 +321,6 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                 df["control_owner"],
             )
 
-    # clean important columns
     for col in [
         "finding_summary",
         "root_cause",
@@ -332,8 +339,10 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if "finding_summary" in df.columns:
         df["finding_summary"] = df["finding_summary"].apply(clean_finding_text)
 
-    if "year" in df.columns:
-        df["year"] = pd.to_numeric(df["year"], errors="coerce")
+    if "year" not in df.columns:
+        df["year"] = np.nan
+
+    df["year"] = pd.to_numeric(df["year"], errors="coerce")
 
     if "release_date" in df.columns:
         df["release_date_fmt"] = df["release_date"].apply(format_date)
@@ -354,6 +363,24 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     if "sox_type" not in df.columns:
         df["sox_type"] = MISSING_LABEL
 
+    if "sector_responsible" not in df.columns:
+        df["sector_responsible"] = MISSING_LABEL
+
+    if "system_area" not in df.columns:
+        df["system_area"] = MISSING_LABEL
+
+    if "finding_summary" not in df.columns:
+        df["finding_summary"] = ""
+
+    if "root_cause" not in df.columns:
+        df["root_cause"] = ""
+
+    if "repeat_finding" not in df.columns:
+        df["repeat_finding"] = ""
+
+    if "rating" not in df.columns:
+        df["rating"] = MISSING_LABEL
+
     return df
 
 
@@ -361,8 +388,20 @@ def prepare_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 # FILTERS
 # =========================
 def filter_years(df: pd.DataFrame, years=(2025, 2026)) -> pd.DataFrame:
+    df = df.copy()
+
     if "year" not in df.columns:
-        return df.copy()
+        df["year"] = np.nan
+        if "issue_creation_date" in df.columns and pd.to_datetime(df["issue_creation_date"], errors="coerce").notna().any():
+            df["year"] = pd.to_datetime(df["issue_creation_date"], errors="coerce").dt.year
+        elif "release_date" in df.columns and pd.to_datetime(df["release_date"], errors="coerce").notna().any():
+            df["year"] = pd.to_datetime(df["release_date"], errors="coerce").dt.year
+        elif "issue_closed_date" in df.columns and pd.to_datetime(df["issue_closed_date"], errors="coerce").notna().any():
+            df["year"] = pd.to_datetime(df["issue_closed_date"], errors="coerce").dt.year
+        elif "remediation_date" in df.columns and pd.to_datetime(df["remediation_date"], errors="coerce").notna().any():
+            df["year"] = pd.to_datetime(df["remediation_date"], errors="coerce").dt.year
+
+    df["year"] = pd.to_numeric(df["year"], errors="coerce")
     return df[df["year"].isin(years)].copy()
 
 
@@ -392,7 +431,6 @@ def filter_sox_open(df: pd.DataFrame) -> pd.DataFrame:
     df = filter_open_issues(df)
     if "sox_type" in df.columns:
         s = clean_series(df["sox_type"]).str.lower()
-        # remove type 3 completely
         df = df[~s.eq("type 3")].copy()
     return df
 
@@ -424,10 +462,7 @@ def severity_color(label: str) -> str:
 
 
 def table_row_colors(n_rows: int) -> List[str]:
-    colors = []
-    for i in range(n_rows):
-        colors.append(COLOR_ROW_A if i % 2 == 0 else COLOR_ROW_B)
-    return colors
+    return [COLOR_ROW_A if i % 2 == 0 else COLOR_ROW_B for i in range(n_rows)]
 
 
 # =========================
@@ -481,7 +516,6 @@ def render_table_image(
     table.scale(1, row_height_scale)
 
     nrows = display_df.shape[0]
-    ncols = display_df.shape[1]
     body_colors = table_row_colors(nrows)
 
     for (r, c), cell in table.get_celld().items():
@@ -546,16 +580,19 @@ def chart_open_findings_by_sector_risk(df: pd.DataFrame, year: int, outdir: Path
     year_df = filter_sox_open(df)
     year_df = year_df[year_df["year"] == year].copy()
 
-    ensure_columns(year_df, ["sector_responsible", "rating", "record_id"])
-
     if year_df.empty:
         return
 
-    year_df["sector_responsible"] = clean_series(year_df["sector_responsible"])
+    ensure_columns(year_df, ["rating", "record_id"])
+
+    if "system_area" not in year_df.columns:
+        year_df["system_area"] = year_df.get("sector_responsible", MISSING_LABEL)
+
+    year_df["system_area"] = clean_series(year_df["system_area"])
     year_df["rating"] = clean_series(year_df["rating"])
 
     pivot = year_df.pivot_table(
-        index="system_area" if "system_area" in year_df.columns else "sector_responsible",
+        index="system_area",
         columns="rating",
         values="record_id",
         aggfunc="count",
@@ -602,15 +639,13 @@ def chart_sox_open_type_breakdown(df: pd.DataFrame, year: int, outdir: Path):
     year_df = filter_sox_open(df)
     year_df = year_df[year_df["year"] == year].copy()
 
-    ensure_columns(year_df, ["sector_responsible", "sox_type", "record_id"])
-
     if year_df.empty:
         return
 
+    ensure_columns(year_df, ["sector_responsible", "sox_type", "record_id"])
+
     year_df["sector_responsible"] = clean_series(year_df["sector_responsible"])
     year_df["sox_type"] = clean_series(year_df["sox_type"])
-
-    # REMOVE TYPE 3 COMPLETELY
     year_df = year_df[~year_df["sox_type"].str.lower().eq("type 3")].copy()
 
     pivot = year_df.pivot_table(
@@ -622,8 +657,11 @@ def chart_sox_open_type_breakdown(df: pd.DataFrame, year: int, outdir: Path):
     )
 
     ordered_cols = ["Missing / Not Provided", "Type 1", "Type 2"]
-    pivot = pivot[[c for c in ordered_cols if c in pivot.columns]]
+    existing_cols = [c for c in ordered_cols if c in pivot.columns]
+    if not existing_cols:
+        return
 
+    pivot = pivot[existing_cols]
     pivot["Grand Total"] = pivot.sum(axis=1)
     pivot = pivot.sort_values("Grand Total", ascending=False)
 
@@ -634,11 +672,13 @@ def chart_sox_open_type_breakdown(df: pd.DataFrame, year: int, outdir: Path):
     pivot = pivot.reset_index()
     pivot = pivot.rename(columns={"sector_responsible": "Sector Responsible"})
 
+    col_widths = [0.18] + [0.18] * (len(pivot.columns) - 1)
+
     render_table_image(
         pivot,
         f"{year} YTD IT SOX Open Findings by Sector - Type Breakdown",
         outdir / f"{year}_sox_open_findings_type_breakdown.png",
-        col_widths=[0.18, 0.18, 0.18, 0.18, 0.18],
+        col_widths=col_widths,
         font_size=12,
         row_height_scale=1.9,
         wrap_widths={"Sector Responsible": 22},
@@ -684,7 +724,9 @@ def report_critical_findings(df: pd.DataFrame, outdir: Path):
         "Status",
     ]
 
-    report["Year"] = report["Year"].fillna("").apply(lambda x: "" if x == "" else str(int(float(x))) if str(x).replace(".", "", 1).isdigit() else str(x))
+    report["Year"] = report["Year"].fillna("").apply(
+        lambda x: "" if x == "" else str(int(float(x))) if str(x).replace(".", "", 1).isdigit() else str(x)
+    )
 
     report = report.sort_values(by=["Year", "Release Date", "Finding Summary"], ascending=[True, True, True])
 
@@ -711,7 +753,8 @@ def report_critical_findings(df: pd.DataFrame, outdir: Path):
 
 def report_repeat_findings(df: pd.DataFrame, outdir: Path):
     rpt = filter_repeat_findings(filter_years(df))
-    rpt = rpt[~clean_series(rpt["sox_type"]).str.lower().eq("type 3")] if "sox_type" in rpt.columns else rpt
+    if "sox_type" in rpt.columns:
+        rpt = rpt[~clean_series(rpt["sox_type"]).str.lower().eq("type 3")].copy()
 
     if rpt.empty:
         return
@@ -744,7 +787,9 @@ def report_repeat_findings(df: pd.DataFrame, outdir: Path):
         "SOX Type",
     ]
 
-    report["Year"] = report["Year"].fillna("").apply(lambda x: "" if x == "" else str(int(float(x))) if str(x).replace(".", "", 1).isdigit() else str(x))
+    report["Year"] = report["Year"].fillna("").apply(
+        lambda x: "" if x == "" else str(int(float(x))) if str(x).replace(".", "", 1).isdigit() else str(x)
+    )
     report = report.sort_values(by=["Year", "SOX Type", "Finding Summary"], ascending=[True, True, True])
 
     paginate_table(
@@ -774,23 +819,37 @@ def report_repeat_findings(df: pd.DataFrame, outdir: Path):
 # =========================
 def report_metrics_summary(df: pd.DataFrame, outdir: Path):
     data = filter_years(df)
-    open_data = filter_open_issues(data)
-    repeat_data = filter_repeat_findings(data)
-    crit_data = filter_critical_findings(data)
-    overdue_data = data.iloc[0:0].copy()
 
+    if "year" not in data.columns:
+        data["year"] = np.nan
+
+    open_data = filter_open_issues(data)
+    if "year" not in open_data.columns:
+        open_data["year"] = data.get("year", np.nan)
+
+    repeat_data = filter_repeat_findings(data)
+    if "year" not in repeat_data.columns:
+        repeat_data["year"] = data.get("year", np.nan)
+
+    crit_data = filter_critical_findings(data)
+    if "year" not in crit_data.columns:
+        crit_data["year"] = data.get("year", np.nan)
+
+    overdue_data = data.iloc[0:0].copy()
     if "status" in data.columns:
         overdue_mask = clean_series(data["status"]).str.lower().str.contains("overdue", na=False)
         overdue_data = data[overdue_mask].copy()
+    if "year" not in overdue_data.columns:
+        overdue_data["year"] = data.get("year", np.nan)
 
     rows = []
     for year in [2025, 2026]:
         rows.append({
             "Year": year,
-            "Current Repeat Findings": len(repeat_data[repeat_data["year"] == year]),
-            "Current Critical SOX Findings": len(crit_data[crit_data["year"] == year]),
-            "Current Open SOX Findings": len(open_data[open_data["year"] == year]),
-            "Current Overdue Findings": len(overdue_data[overdue_data["year"] == year]),
+            "Current Repeat Findings": int(len(repeat_data[repeat_data["year"] == year])),
+            "Current Critical SOX Findings": int(len(crit_data[crit_data["year"] == year])),
+            "Current Open SOX Findings": int(len(open_data[open_data["year"] == year])),
+            "Current Overdue Findings": int(len(overdue_data[overdue_data["year"] == year])),
         })
 
     metrics_df = pd.DataFrame(rows)
@@ -841,6 +900,17 @@ def main():
     df = filter_years(df, years=(2025, 2026))
 
     output_dir = Path(args.output_dir)
+    ensure_dir(output_dir)
+
+    print("Columns after preparation:")
+    print(df.columns.tolist())
+
+    if "year" in df.columns:
+        print("Sample year values:")
+        print(df["year"].dropna().head(10).tolist())
+    else:
+        print("WARNING: 'year' column was not created.")
+
     generate_reports(df, output_dir)
 
     run_log = [
