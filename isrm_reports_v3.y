@@ -719,9 +719,9 @@ def create_run_log(df: pd.DataFrame, outdir: Path, dataset_path: Path, sheet_nam
         "- Fixed chart title/header overlap by increasing top margin and wrapping long titles.",
         "- Control Owner now prioritizes Business_Contact_Recommendations.",
         "- Repeat and critical detail reports are paginated for readability.",
-        "- Table cells are wrapped and row heights expanded for professional output.
-- Type 3 is removed from 2025 and 2026 SOX open findings sector/type breakdown tables.
-- Finding summaries are lightly cleaned for better business readability.",
+        "- Table cells are wrapped and row heights expanded for professional output.",
+        "- Type 3 is removed from 2025 and 2026 SOX open findings sector/type breakdown tables.",
+        "- Finding summaries are lightly cleaned for better business readability.",
     ]
     (outdir / "run_log.txt").write_text("\n".join(lines), encoding="utf-8")
 
